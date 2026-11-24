@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         CX 考试 AI 大脑 · 学习通考试自动答题
 // @namespace    https://github.com/wzj1122/cx-exam-ai
-// @version      1.11.14
+// @version        1.12.0
 // @description  超星学习通考试页专用：自动抓题 + 加密字体解密 + 附件题（PDF 题干）逐页转图 + 多模型交叉判定（无需题库）+ 拟人化点选。参考 ocsjs 架构重写。
 // @author       wzj1122
 // @license      MIT

@@ -313,6 +313,12 @@ CXAI.Sync = (function () {
     if (!code) {
       return { ok: false, skipped: true, error: '还没有同步码', at: Date.now() };
     }
+    // ui.forcePull = false（默认）且本地已有模型时不覆盖：考试页面板里临时改的配置
+    // 不该每次进页都被云端旧配置冲掉（2026-11-24 审查 #2：此前这条主路径绕过了 forcePull 开关）
+    const force = CXAI.Cfg.get('ui.forcePull', false) === true;
+    if (!force && (CXAI.Cfg.get('ai.providers', []) || []).length) {
+      return { ok: false, skipped: true, error: '本地已有模型，未覆盖（开 ui.forcePull 可强制拉取）', at: Date.now() };
+    }
     const t0 = Date.now();
     try {
       const obj = await pullInto(code);

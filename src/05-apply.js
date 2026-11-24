@@ -791,7 +791,58 @@ CXAI.Apply = (function () {
    * 处理填空题 / 简答题。
    * @returns {Promise<{ok:boolean, filled:number, mode?:string, error?:string}>}
    */
+  /**
+   * 等这道题的答题框就绪。
+   *
+   * 单题模式换题、整卷预览首次渲染时，UEditor 是**异步**建起来的：这一刻页面上
+   * 只有原始 textarea，等一拍才变成编辑器实例。旧实现在这一刻直接写 textarea/iframe，
+   * 编辑器随后初始化又用空内容覆盖回去 —— 用户看到的就是
+   * 「填空题第一次点不输入答案，第二次点才写进去」（2026-11-19 实测）。
+   */
+  async function ensureBlankReady(q) {
+    let api = null;
+    try {
+      api = CXAI.Scraper.ueditorApi ? CXAI.Scraper.ueditorApi() : null;
+    } catch (e) {
+      api = null;
+    }
+    if (!api || !CXAI.Scraper.ensureEditorsAsync) return;
+    let areas = [];
+    try {
+      areas = Array.from((q.root || document).querySelectorAll('textarea[id^="answerEditor"], textarea[id^="answer"]'));
+    } catch (e) {
+      areas = [];
+    }
+    if (!areas.length) return;
+    // 实例已经挂好就不用等
+    const inst = (api.instances && typeof api.instances === 'object' ? api.instances : {}) || {};
+    if (areas.every((ta) => inst[ta.id] && inst[ta.id].body)) return;
+    try {
+      await CXAI.Scraper.ensureEditorsAsync(2600);
+    } catch (e) {}
+    await sleep(CXAI.U.randInt(120, 260));
+  }
+
   async function answerBlank(q, text, opts) {
+    opts = opts || {};
+    await ensureBlankReady(q);
+    let r = await writeBlankOnce(q, text, opts);
+    // 一个字都没写进去：多半是元素刚被页面重建/编辑器刚就绪，重取一次再写一遍
+    if (r && !r.filled && !r.ok) {
+      await sleep(CXAI.U.randInt(320, 560));
+      let fresh = q;
+      try {
+        const list = (CXAI.Scraper.collect() || {}).questions || [];
+        fresh = CXAI.Scraper.pickSame(list, q) || q;
+      } catch (e) {}
+      r = await writeBlankOnce(fresh, text, opts);
+      if (r && r.filled) CXAI.Log.info('填空/简答第一次没写进去，重取答题框后已写入 ' + r.filled + '/' + (r.total || '?'));
+    }
+    return r;
+  }
+
+  /** 真正写一次（编辑器 → 原生输入框两级） */
+  async function writeBlankOnce(q, text, opts) {
     opts = opts || {};
     const eds = editorList(q);
     if (eds.length) {
@@ -861,6 +912,143 @@ CXAI.Apply = (function () {
   function isTextKind(q) {
     if (!q) return false;
     return /^(completion|line|reader|fill|oral|listening)$/.test(String(q.type || ''));
+  }
+
+  /* ---------------- 判断题 ---------------- */
+
+  const JUDGE_YES = /^(对|正确|是|√|v|true|t|yes|y|1|right)$/i;
+  const JUDGE_NO = /^(错|错误|否|×|x|false|f|no|n|0|wrong)$/i;
+
+  /** 「对/错」两侧判定：返回 'yes' / 'no' / ''（先剥掉选项字母前缀） */
+  function judgeSide(text) {
+    const t = String(text == null ? '' : text)
+      .trim()
+      .replace(/^[A-Ha-h][\s.、:：)）]*/, '')
+      .trim();
+    if (!t) return '';
+    if (JUDGE_YES.test(t)) return 'yes';
+    if (JUDGE_NO.test(t)) return 'no';
+    return '';
+  }
+
+  /**
+   * 判断题的候选选项：问卷子长成什么皮肤，只要能点到就行。
+   *   ① q.options（正常 .answerBg 皮肤 / 已被 03-scraper 还原的 hoverDiv 皮肤）
+   *   ② 小题组里唯一那个空的选项（漏网的非字母键判断题）
+   *   ③ 直接从题目容器里找 .hoverDiv / .answerBg / .answer_p
+   */
+  function judgeOptions(q) {
+    const out = [];
+    const push = (o, i) => {
+      const el = (o && (o.clickEl || o.el || o.holder || o.add)) || null;
+      if (!el || !el.isConnected) return;
+      if (out.some((x) => x.el === el)) return;
+      out.push({
+        key: String((o && o.key) || '') || String.fromCharCode(65 + i),
+        text: String((o && (o.text || o.raw || o.data)) || '').trim(),
+        el
+      });
+    };
+    (q.options || []).forEach(push);
+    if (!out.length && q.group && q.group.length === 1) (q.group[0].options || []).forEach(push);
+    if (!out.length && q.root) {
+      let nodes = [];
+      try {
+        nodes = Array.from(q.root.querySelectorAll('.hoverDiv, .answerBg, .answer_p, .Cy_ulTop li')).filter(
+          (el) => el && el.isConnected && !(el.closest && el.closest('.mark_answer'))
+        );
+      } catch (e) {
+        nodes = [];
+      }
+      nodes.slice(0, 4).forEach((el, i) => {
+        const txt = String(el.innerText || el.textContent || '').trim();
+        if (!txt || txt.length > 20) return;
+        push({ key: String.fromCharCode(65 + i), text: txt, el }, i);
+      });
+    }
+    return out.slice(0, 4);
+  }
+
+  /**
+   * 判断题落盘：先按「对/错」文字选边，再点那个选项，最后以页面状态验收。
+   *
+   * 为什么不再走字母：判断题的隐藏域常存 `true`/`false`，选项键也可能是 `data="true"`，
+   * 拿 AI 的 `A`/`B` 去套集合比对永远对不上 —— 表现就是"点了、选了，但脚本说写入失败"。
+   * OCS 的做法就是判断题按文字点，这里照做。
+   */
+  async function answerJudgement(q, result, opts) {
+    opts = opts || {};
+    const cands = judgeOptions(q);
+    if (cands.length < 2) {
+      return {
+        ok: false,
+        manual: true,
+        error: '判断题没找到可点的选项（' + (q.typeLabel || '判断题') + '）；答案在面板里，请手动选'
+      };
+    }
+    const keys = (result && (result.keys || []).join('')) || '';
+    // 目标边：答案文字 → 字母 → 选项位置
+    let want = judgeSide(result && result.answerText);
+    let wantedKey = '';
+    if (!want) {
+      const m = /^[A-Ha-h]+$/.exec(String(keys).trim());
+      if (m) {
+        const idx = m[0].toUpperCase().charCodeAt(0) - 65;
+        const o = cands[idx];
+        want = (o && judgeSide(o.text)) || (idx === 0 ? 'yes' : 'no');
+      }
+    }
+    if (!want) {
+      return {
+        ok: false,
+        manual: true,
+        error: '判断题的答案没能对上「对/错」（AI 答案：' + ((result && result.answerText) || '-') + '），请手动选'
+      };
+    }
+    let target = cands.filter((o) => judgeSide(o.text) === want)[0];
+    // 选项文字里没有对/错（只有 true/false 之类）：按位置取，A=第一个
+    if (!target) target = cands[want === 'yes' ? 0 : 1] || cands[0];
+    wantedKey = target.key;
+
+    const pseudo = {
+      type: 'judgement',
+      qid: q.qid,
+      root: q.root,
+      options: cands.map((o) => ({ key: o.key, text: o.text, el: o.el, answered: false }))
+    };
+    const r = await clickOne(pseudo, wantedKey, opts);
+    await sleep(CXAI.U.randInt(180, 420));
+
+    // 验收三条任一命中就算成功：隐藏域折算成同一侧 / 选项上有选中标记
+    let live = '';
+    let liveOk = false;
+    try {
+      const pv = CXAI.Scraper.pageValue(q) || {};
+      live = String(pv.value || '');
+      if (live) {
+        if (/^[A-Ha-h]+$/.test(live)) {
+          liveOk = live.toUpperCase().indexOf(wantedKey) >= 0;
+        } else {
+          const side = judgeSide(live);
+          liveOk = !!side && side === want;
+        }
+      }
+    } catch (e) {}
+    let marked = false;
+    try {
+      marked = isChecked(target.el, cands.map((x) => x.el));
+    } catch (e) {}
+    const ok = !!(r && r.ok) || liveOk || marked;
+    return {
+      ok,
+      clicked: [wantedKey],
+      actual: ok ? target.text : live,
+      strategy: 'judgement',
+      manual: !ok,
+      error: ok
+        ? undefined
+        : '判断题点了没生效（' + ((r && r.error) || '页面无变化') + '）；目标：' + (want === 'yes' ? '对' : '错')
+    };
   }
 
   /* ---------------- 统一入口 ---------------- */
@@ -1035,9 +1223,21 @@ CXAI.Apply = (function () {
       const b = blanks[i];
       const want = picks[i] || '';
       if (!want) continue;
-      const opt = (b.options || []).filter((o) => String(o.key || '').toUpperCase() === want)[0];
+      let opt = (b.options || []).filter((o) => String(o.key || '').toUpperCase() === want)[0];
+      // 选项键不是字母（判断题皮肤 data=true/false 之类漏网到这里的）：按字母位置取，A=第 1 个
+      if (!opt && /^[A-H]$/.test(want)) {
+        const idx = want.charCodeAt(0) - 65;
+        opt = (b.options || [])[idx] || null;
+      }
       if (!opt) continue;
       const target = opt.add || opt.el || opt.holder;
+      const markedOf = () => {
+        try {
+          if (optionMarked(b, String(opt.key || '').toUpperCase() === want ? want : String(opt.key || ''))) return true;
+        } catch (e) {}
+        const re = /(^|\s)(check_?answer|checked|selected|cur|active|chosed|chosen)\S*/i;
+        return [opt.el, opt.holder, opt.add].filter(Boolean).some((n) => re.test(String(n.className || '')));
+      };
       try {
         await humanClick(target);
       } catch (e) {}
@@ -1050,11 +1250,12 @@ CXAI.Apply = (function () {
         await sleep(220);
         got = blankStateOf(b, q.qid);
         if (!got && optionMarked(b, want)) got = want;
-        if (got && got.toUpperCase().indexOf(want) >= 0) break;
+        if (!got && markedOf()) got = want;
+        if (got && String(got).toUpperCase().indexOf(want) >= 0) break;
       }
 
       // 只有"DOM 里也没留下选中标记"才补一次原生 click（元素被遮/坐标偏移时）
-      if (got.toUpperCase().indexOf(want) < 0 && !optionMarked(b, want)) {
+      if (String(got).toUpperCase().indexOf(want) < 0 && !optionMarked(b, want) && !markedOf()) {
         try {
           target.click();
         } catch (e) {}
@@ -1062,11 +1263,12 @@ CXAI.Apply = (function () {
           await sleep(240);
           got = blankStateOf(b, q.qid);
           if (!got && optionMarked(b, want)) got = want;
-          if (got && got.toUpperCase().indexOf(want) >= 0) break;
+          if (!got && markedOf()) got = want;
+          if (got && String(got).toUpperCase().indexOf(want) >= 0) break;
         }
       }
 
-      if (got.toUpperCase().indexOf(want) >= 0) {
+      if (String(got).toUpperCase().indexOf(want) >= 0) {
         filled++;
         wrote.push(want);
       }
@@ -1196,19 +1398,26 @@ CXAI.Apply = (function () {
 
   async function apply(q, result) {
     if (!q || !result) return { ok: false, error: '参数缺失' };
+    // 落盘前把 collect 的短窗 memo 作废：点击会改选中态/隐藏域，判定链路里缓存的老快照
+    // 会让"终验读页面真实答案"读到旧值（2026-11-24）
+    try { if (CXAI.Scraper.invalidateCollect) CXAI.Scraper.invalidateCollect(); } catch (e) {}
     const opts = {
       verifyMs: CXAI.Cfg.get('apply.verifyMs', 1100),
       clearExtra: CXAI.Cfg.get('apply.clearExtra', true),
       instant: CXAI.Cfg.get('apply.instantType', false)
     };
-    // 全题型兜底：选择题型但页面上一个选项都没抓到时，不要把"没选项"当成"写成功"
-    if ((q.type === 'single' || q.type === 'multiple' || q.type === 'judgement') && !(q.options || []).length) {
+    // 全题型兜底：选择题型但页面上一个选项都没抓到时，不要把"没选项"当成"写成功"。
+    // 判断题不在此列 —— 它的选项有时藏在 .hoverDiv 里（readOptionElements 抓不到），
+    // answerJudgement 会自己去题目容器里找，提前拦下会变成"点了没反应"。
+    if ((q.type === 'single' || q.type === 'multiple') && !(q.options || []).length) {
       return {
         ok: false,
         manual: true,
         error: '这题识别成' + (q.typeLabel || '选择题') + '，但页面上没有可点的选项；答案在面板里（双击小球 → 点这道题的题号格），请手动填写'
       };
     }
+    // 判断题：一律按「对/错」文字点（隐藏域存 true/false，按字母比永远对不上）
+    if (q.type === 'judgement') return await answerJudgement(q, result, opts);
     // 小题组（完型填空 / 阅读理解）：先按"每空一小题"落盘，别掉进下面的文本分支，
     // 那里没有输入框，只会回报"没找到输入框"→ 整题静默丢弃（2026-11-18 实测 Q8/Q9 全空）。
     if (q.group && q.group.length) return await answerGroup(q, result);
@@ -1268,7 +1477,12 @@ CXAI.Apply = (function () {
       const list = (CXAI.Scraper.collect() || {}).questions || [];
       freshQ = CXAI.Scraper.pickSame(list, q) || q;
     } catch (e) {}
-    const live = (CXAI.Scraper.pageValue(freshQ) || {}).value || (r && r.actual) || '';
+    let live = (CXAI.Scraper.pageValue(freshQ) || {}).value || (r && r.actual) || '';
+    // 判断题的隐藏域可能是 true/false（题型被猜成 single 时 pageValue 不会折算）：
+    // 统一走 scraper 的口径折算成字母，再按集合比对，避免"点了也选了却报写入失败"。
+    try {
+      if (CXAI.Scraper.normPageAnswer) live = CXAI.Scraper.normPageAnswer(freshQ, live) || live;
+    } catch (e) {}
     const want = (result.keys || []).join('');
     // 最终验收按"集合相等"：want='AB' 而页面留下 AC 必须判失败。
     // 旧实现只看 live 里有没有第一个字母，配合 retryByText 的"点了几次"式成功判定会漏掉错选项。
@@ -1300,6 +1514,26 @@ CXAI.Apply = (function () {
         node = document.querySelector('[onclick*="saveQuestion(' + q.qid + '"]');
       } catch (e) {}
     }
+    // 单题翻页模式：整页只有这一道题，而「保存」按钮常常挂在题目容器**外面**
+    //（页面底部工具条 / 右侧操作区）。只按 root + qid 找就会一直报
+    //「没找到该题的保存按钮，内容可能会丢」（2026-11-19 实测 #5）。
+    if (!node) {
+      let onlyOne = false;
+      try {
+        onlyOne = document.querySelectorAll('.questionLi, .TiMu').length <= 1;
+      } catch (e) {}
+      if (onlyOne) {
+        node = document.querySelector(SEL);
+        if (!node) {
+          node =
+            Array.from(document.querySelectorAll('a, button, span, input[type="button"]')).filter((el) => {
+              const t = String(el.textContent || '').trim();
+              if (!/^(保存|保存答案|保存作答|保存本题)$/.test(t)) return false;
+              return !!(el.offsetParent || el.getClientRects().length);
+            })[0] || null;
+        }
+      }
+    }
     if (!node) return false;
     // 命中的常常是外层容器（超星整卷预览是 <div class="savebtndiv"><a onclick="saveQuestion(...)">保存</a></div>），
     // 直接点容器不会触发内部按钮的行为 —— 早先就是这样"点了但没保存"。这里往下找真正可点的那个。
@@ -1324,5 +1558,5 @@ CXAI.Apply = (function () {
     return nodes[0] || null;
   }
 
-  return { humanClick, clickOnce, settle, apply, answerChoice, answerBlank, clickOne, isChecked, stateSig, saveOne, findSubmitButton, typeInto, fire };
+  return { humanClick, clickOnce, settle, apply, answerChoice, answerBlank, answerJudgement, judgeSide, clickOne, isChecked, stateSig, saveOne, findSubmitButton, typeInto, fire };
 })();

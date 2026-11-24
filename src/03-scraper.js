@@ -698,6 +698,55 @@ CXAI.Scraper = (function () {
       });
   }
 
+  /**
+   * 判断题的另一种皮肤：选项不是 `.answerBg > .answer_p`，而是
+   *   <div class="hoverDiv" onclick="..."><span data="true" qid="…">对</span></div>
+   * 于是 `readGroupBlanks` 把它当成"只有 1 个空的小题组"，而模型回的是字母 A/B，
+   * `answerGroup` 里按字母找选项永远找不到 —— 每题都报「小题组只落了 0/1 个空」。
+   * 2026-11-19 用户真机就是这个：答一题模式下判断题点了没反应、日志 0/1 空。
+   *
+   * OCS 的做法是判断题一律按「对/错」文字点。所以这里在抓题阶段就把它还原成判断题形态：
+   * 选项键按位置给 A/B（保持字母口径），点的元素沿用 span（onclick 常在它身上）。
+   */
+  function normalizeJudgeGroup(q) {
+    if (!q || !q.group || q.group.length !== 1) return;
+    const b = q.group[0] || {};
+    const opts = (b.options || []).slice(0, 4);
+    if (opts.length < 2) return;
+    // 字母键说明它真的是"完型/阅读/共用选项"的那一空，别动
+    if (opts.every((o) => /^[A-H]$/i.test(String((o && o.key) || '')))) return;
+    const textOf = (o) => String((o && (o.text || o.data || o.key)) || '').trim();
+    const YES = /^(对|正确|是|√|v|true|t|yes|y|1|right)$/i;
+    const NO = /^(错|错误|否|×|x|false|f|no|n|0|wrong)$/i;
+    const hasYes = opts.some((o) => YES.test(textOf(o)));
+    const hasNo = opts.some((o) => NO.test(textOf(o)));
+    if (!(hasYes && hasNo)) return;
+    const els = opts.map((o) => (o && (o.add || o.el || o.holder)) || null).filter(Boolean);
+    q.type = 'judgement';
+    q.typeLabel = labelOf('judgement', q.typeCode);
+    q.shell = 'choice';
+    q.shellLabel = SHELL_LABEL.choice;
+    q.options = opts.map(function (o, i) {
+      const raw = textOf(o);
+      return {
+        key: String.fromCharCode(65 + i),
+        // 选项文字只有 "true"/"false" 时换成中文，模型和日志都好看
+        text: cleanOption(YES.test(raw) ? '对' : NO.test(raw) ? '错' : raw, i),
+        raw: raw,
+        el: o.add || o.el || o.holder || null,
+        clickEl: o.add || o.el || o.holder || null,
+        answered: false
+      };
+    });
+    q.options.forEach((o) => {
+      o.answered = isOptionAnswered(o.el, 'judgement', els);
+    });
+    q.judgeRaw = opts.map(function (o, i) {
+      return { key: String.fromCharCode(65 + i), data: String((o && (o.data || o.key)) || '') };
+    });
+    q.group = [];
+  }
+
   function parseOne(root, index, pageKind) {
     const typeFromInput = readTypeInput(root, pageKind);
     const typeCode = readTypeRaw(root);
@@ -761,6 +810,10 @@ CXAI.Scraper = (function () {
       root,
       answered: false
     };
+    // 判断题被 .hoverDiv/true-false 皮肤误判成"1 个空的小题组"时在这里还原
+    try {
+      normalizeJudgeGroup(q);
+    } catch (e) {}
     q.answered = isAnsweredNow(q);
     return q;
   }
@@ -947,7 +1000,12 @@ CXAI.Scraper = (function () {
   function normPageAnswer(q, raw) {
     const v = String(raw == null ? '' : raw).trim();
     if (!v) return '';
-    if (!q || q.type !== 'judgement') return /^[A-H]+$/i.test(v) ? v.toUpperCase() : v;
+    // 题型码缺失被 guessType 猜成 single 时，判断题的隐藏域仍是 true/false：
+    // 只要值本身长得像布尔且题目只有两个选项，也按判断题口径折算（否则终验被
+    // replace(/[^A-H]/g,'') 清成空串，"点了也选了"却永远报写入失败）。
+    const looksBool = /^(true|false|t|f|1|0|对|错|正确|错误|是|否|√|×)$/i.test(v);
+    const isJudge = q && (q.type === 'judgement' || (looksBool && (q.options || []).length === 2));
+    if (!isJudge) return /^[A-H]+$/i.test(v) ? v.toUpperCase() : v;
     const k = judgeKey(q, v);
     return k || (/^[A-H]+$/i.test(v) ? v.toUpperCase() : v);
   }
@@ -1274,6 +1332,9 @@ CXAI.Scraper = (function () {
       const w = typeof unsafeWindow !== 'undefined' && unsafeWindow ? unsafeWindow : window;
       if (w && w.MathJax && typeof w.MathJax.typeset === 'function') w.MathJax.typeset();
     } catch (e) {}
+    // 换题块 = DOM 全量重建：collect() 的 250ms memo 必须立刻失效，
+    // 否则上层 relive/pageValue 读到的是旧题的缓存快照
+    invalidateCollect();
     return { ok: true };
   }
 
@@ -1329,7 +1390,33 @@ CXAI.Scraper = (function () {
 
   /* ---------- 对外 ---------- */
 
+  /**
+   * collect() 短窗 memo（2026-11-24）：
+   * 一道题的处理路径里 collect 会被调 4~6 次（decrypt / relive / apply / pageValue / freshAnswered），
+   * 每次都是全 DOM 解析。这里对 250ms 内的重复调用返回同一份结果；
+   * 元素被换掉（applyNextPage）或需要强制刷新时调 invalidateCollect()。
+   * 注意：返回的是缓存对象本体，调用方不得改写其结构（只读使用）。
+   */
+  let collectMemo = null;
+  let collectMemoAt = 0;
+  let collectMemoDoc = null;
+  const COLLECT_MEMO_MS = 250;
+  function invalidateCollect() {
+    collectMemo = null;
+    collectMemoAt = 0;
+    collectMemoDoc = null;
+  }
   function collect() {
+    try {
+      // document 换了（测试/页面重挂）立即失效，防止跨文档读到旧快照
+      if (collectMemo && collectMemoDoc === document && Date.now() - collectMemoAt < COLLECT_MEMO_MS) return collectMemo;
+    } catch (e) {}
+    collectMemo = collectFresh();
+    collectMemoDoc = document;
+    collectMemoAt = Date.now();
+    return collectMemo;
+  }
+  function collectFresh() {
     // 加密字体（font-cxsecret）：映射表就绪后，每次抓题前先把页面上的密文原地还原。
     // 之前 02-font 从未被调用，密文（私用区字符）原样送进模型，题干/选项等于乱码。
     try {
@@ -1459,6 +1546,7 @@ CXAI.Scraper = (function () {
     answerView,
     detectPage,
     collect,
+    invalidateCollect,
     parseOne,
     guessType,
     typeFromValue,
@@ -1480,6 +1568,7 @@ CXAI.Scraper = (function () {
     isAnsweredNow,
     judgeKey,
     normPageAnswer,
+    normalizeJudgeGroup,
     toPlain,
     pageValue,
     stemAnswerKeys,

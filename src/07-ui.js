@@ -306,6 +306,23 @@ details.adv[open] > summary, details.more[open] > summary { margin-bottom:6px; }
 .help { font-size:10.5px; color:#8a93a3; line-height:1.6; margin-top:2px; }
 .pv .mhint { font-size:10.5px; color:#8a93a3; }
 .tagv { display:inline-block; font-size:9.5px; padding:1px 4px; border-radius:3px; background:#eef4ff; color:#2563eb; margin-left:4px; }
+/* ---------------- 右下角答案条（仅显示答案模式的展示面） ---------------- */
+.anscorner { position:fixed; right:12px; bottom:12px; z-index:2; width:236px; max-height:46vh;
+  display:flex; flex-direction:column; background:rgba(255,255,255,.97); border:1px solid #dfe6f0;
+  border-radius:10px; box-shadow:0 6px 24px rgba(31,41,55,.16); font-size:12px; color:#1f2937; overflow:hidden; }
+.anscorner .hd { display:flex; align-items:center; gap:6px; padding:7px 10px; cursor:pointer;
+  background:#f7f9fd; border-bottom:1px solid #edf0f6; font-weight:600; user-select:none; }
+.anscorner .hd .cnt { margin-left:auto; color:#6b7280; font-weight:400; font-size:10.5px; }
+.anscorner .hd .fold { color:#9aa3b2; padding:0 2px; }
+.anscorner.folded .list { display:none; }
+.anscorner.folded { width:auto; max-height:none; }
+.anscorner .list { overflow-y:auto; padding:4px 6px 8px; }
+.anscorner .arow { display:flex; gap:6px; padding:4px 6px; border-radius:6px; cursor:pointer; line-height:1.45; }
+.anscorner .arow:hover { background:#eef4ff; }
+.anscorner .arow b { flex:none; min-width:26px; color:#2563eb; font-weight:600; }
+.anscorner .arow .a { flex:1; word-break:break-all; }
+.anscorner .arow.txt .a { color:#92400e; }
+.anscorner .empty { padding:8px 10px; color:#9aa3b2; font-size:11px; line-height:1.5; }
 `;
   /* ---------------- 结构 ---------------- */
 
@@ -334,6 +351,7 @@ details.adv[open] > summary, details.more[open] > summary { margin-bottom:6px; }
     <div class="bar">
       <button class="b primary" data-act="next" title="答下一道还没答的题">答一题</button>
       <button class="b" data-act="run" title="从头连答到底">自动连答</button>
+      <button class="b" id="btn-showonly" data-act="showonly" title="开=只判题显示答案，不点击选项；关=判定后自动点选落盘">仅显示</button>
       <button class="b" data-act="pause">暂停</button>
       <button class="b danger" data-act="stop">停止</button>
     </div>
@@ -357,6 +375,12 @@ details.adv[open] > summary, details.more[open] > summary { margin-bottom:6px; }
   </div>
   <div class="gtoast" id="gtoast"></div>
   <div class="ball" id="ball"><span id="balllabel">CX</span></div>
+  <div class="anscorner" id="anscorner">
+    <div class="hd" data-act="anscorner-fold" title="点击展开/收起（答案条靠右下角显示全部已判定的答案）">
+      <b>AI 答案</b><span class="cnt" id="anscorner-count"></span><span class="fold">▾</span>
+    </div>
+    <div class="list" id="anscorner-list"></div>
+  </div>
 </div>`;
   }
 
@@ -399,6 +423,17 @@ details.adv[open] > summary, details.more[open] > summary { margin-bottom:6px; }
     docKeydown = null;
     logOff = null;
     resizeHandler = null;
+    // 卸载时联动停掉全局副作用：boot 的 2s 交卷检测 interval、Guard 的弹窗轮询/伪装。
+    // 旧实现 unmount 后这些定时器还在跑（2026-11-24 审查 #8）。
+    try {
+      if (typeof CXAI !== 'undefined' && CXAI._finishTimer) {
+        clearInterval(CXAI._finishTimer);
+        CXAI._finishTimer = null;
+      }
+    } catch (e) {}
+    try {
+      if (typeof CXAI !== 'undefined' && CXAI.Guard && CXAI.Guard.uninstall) CXAI.Guard.uninstall();
+    } catch (e) {}
     try {
       if (host && host.parentNode) host.parentNode.removeChild(host);
     } catch (e) {}
@@ -467,6 +502,41 @@ details.adv[open] > summary, details.more[open] > summary { margin-bottom:6px; }
         case 'logs': {
           const lg = $('#logs');
           if (lg) lg.classList.toggle('show');
+          break;
+        }
+        case 'showonly': {
+          const cur = CXAI.Cfg.get('ui.showOnly', true) === true;
+          try {
+            CXAI.Cfg.set('ui.showOnly', !cur);
+            if (CXAI.Cfg.save) CXAI.Cfg.save();
+          } catch (err) {}
+          toast(!cur ? '仅显示答案：开（判题后不点击选项）' : '自动点选：开（判定后落盘）');
+          render();
+          break;
+        }
+        case 'anscorner-fold': {
+          const el = $('#anscorner');
+          if (el) {
+            el.classList.toggle('folded');
+            try {
+              CXAI.Store.set('ansCornerFold', el.classList.contains('folded'));
+            } catch (err) {}
+          }
+          break;
+        }
+        case 'corner-copy': {
+          let txt = '';
+          try {
+            txt = decodeURIComponent(actEl.getAttribute('data-a') || '');
+          } catch (err) {
+            txt = actEl.getAttribute('data-a') || '';
+          }
+          copyAnswerText(txt);
+          break;
+        }
+        case 'corner-jump': {
+          const n = Number(actEl.getAttribute('data-i')) || 0;
+          if (n && CXAI.Engine && CXAI.Engine.jumpTo) CXAI.Engine.jumpTo(n);
           break;
         }
         case 'go': {
@@ -613,7 +683,19 @@ details.adv[open] > summary, details.more[open] > summary { margin-bottom:6px; }
           }
           toast('答一题…（双击小球开面板 · ⇅ 填同步码）');
           const p = CXAI.Engine.answerNext();
-          if (p && p.catch) p.catch((e) => toast('执行失败：' + ((e && e.message) || e)));
+          if (p && p.then) {
+            p.then(function (r) {
+              if (!r) return;
+              if (r.reason === 'preview') toast('已切到整卷预览，加载完再点一下继续');
+              else if (r.reason === 'all-answered') toast('这一页都答完了 ✓');
+              else if (r.showOnly) toast('#' + r.q + ' 答案：' + (r.answer || '?') + ' · 右下角可见');
+              else if (r.ok) toast('#' + r.q + ' 已答' + (r.next ? ' · 下一题 #' + r.next : ''));
+              else if (r.reason === 'no-question') toast('这一页没识别到题目');
+              else toast('#' + (r.q || '?') + ' 没写进去 · 双击开面板看原因');
+            }).catch(function (e) {
+              toast('执行失败：' + ((e && e.message) || e));
+            });
+          }
         }
       } catch (e) {
         toast('执行失败：' + ((e && e.message) || e));
@@ -814,6 +896,16 @@ details.adv[open] > summary, details.more[open] > summary { margin-bottom:6px; }
       ' · ' + (state.mode === 'auto' ? '自动连答' : '答一题'));
     renderQGrid(rows);
     renderQDetail(rows);
+    renderCorner(rows);
+    const soBtn = $('#btn-showonly');
+    if (soBtn) {
+      const on = CXAI.Cfg.get('ui.showOnly', true) === true;
+      soBtn.textContent = on ? '仅显示' : '自动点选';
+      soBtn.classList.toggle('primary', on);
+      soBtn.title = on
+        ? '当前仅显示答案（不点击选项）。点一下切换为自动点选落盘'
+        : '当前自动点选落盘。点一下切回「仅显示答案」';
+    }
     const ball = $('#ball');
     if (ball) ball.classList.toggle('busy', state.running && !state.paused);
     if (ball) ball.classList.toggle('needs-setup', !!state.needSetup && !state.running);
@@ -858,6 +950,88 @@ details.adv[open] > summary, details.more[open] > summary { margin-bottom:6px; }
   function update(patch) {
     Object.assign(state, patch || {});
     render();
+  }
+
+  /** 答案进剪贴板（navigator.clipboard 优先，非安全上下文退 execCommand） */
+  function copyAnswerText(t) {
+    t = String(t || '').trim();
+    if (!t) return;
+    const done = () => toast('答案已复制 ✓');
+    const fallback = () => {
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = t;
+        ta.style.cssText = 'position:fixed;opacity:0;left:-999px';
+        (document.body || document.documentElement).appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        (ta.parentNode || document.body).removeChild(ta);
+        done();
+      } catch (e) {
+        toast('复制失败，请手动选中答案');
+      }
+    };
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(t).then(done).catch(fallback);
+      } else fallback();
+    } catch (e) {
+      fallback();
+    }
+  }
+
+  /* ---------------- 右下角答案条 ---------------- */
+
+  /**
+   * 判定结果一出来就出现在右下角靠边：题号 + 答案。
+   *   选择/判断题行：点击 = 滚动跳到该题；
+   *   填空/简答/论述等文本行：点击 = 完整答案复制进剪贴板。
+   * 数据直接吃 rowsForRender()（pushQuestion 已写入的清单），不另开数据通道。
+   */
+  const CORNER_TEXT_RE = /填空|简答|论述|名词解释|计算题|听力|口语|附件|阅读|翻译|作文/;
+
+  function cornerAnswerText(a) {
+    // 判断题答案若是 true/false，给人话：对 / 错
+    const t = String(a == null ? '' : a).trim();
+    if (/^(true|t|1|正确|对|√)$/i.test(t)) return '对';
+    if (/^(false|f|0|错误|错|否|×)$/i.test(t)) return '错';
+    return t;
+  }
+
+  function renderCorner(rows) {
+    const box = $('#anscorner');
+    if (!box) return;
+    const show = CXAI.Cfg.get('ui.answerCorner', true) !== false;
+    box.style.display = show ? 'flex' : 'none';
+    if (!show) return;
+    try {
+      if (CXAI.Store.get('ansCornerFold', false)) box.classList.add('folded');
+    } catch (e) {}
+    const list = $('#anscorner-list');
+    const cnt = $('#anscorner-count');
+    if (!list) return;
+    const esc = (t) => CXAI.U.escapeHtml(String(t == null ? '' : t));
+    const all = rows || [];
+    const items = all.filter((r) => r && !r.placeholder && String(r.answer || '').trim());
+    const total = Math.max(state.total || 0, all.length);
+    if (cnt) cnt.textContent = '已判 ' + items.length + '/' + total + (state.prefetched ? ' · 预取 ' + state.prefetched : '');
+    if (!items.length) {
+      list.innerHTML = '<div class="empty">还没有判定结果 —— 检测到题目后会自动判题，答案出现在这里</div>';
+      return;
+    }
+    list.innerHTML = items
+      .map((it) => {
+        const n = Number(it.index) || 0;
+        const raw = String(it.answer || '').trim();
+        const a = cornerAnswerText(raw);
+        const isTxt = CORNER_TEXT_RE.test(String(it.typeLabel || '')) || !/^[A-Ha-h｜|\s]+$/.test(a);
+        const short = a.length > 40 ? a.slice(0, 40) + '…' : a;
+        const tip = '#' + n + ' ' + a + (isTxt ? '（点击复制）' : '（点击跳到该题）');
+        return '<div class="arow' + (isTxt ? ' txt' : '') + '" data-act="' + (isTxt ? 'corner-copy' : 'corner-jump') +
+          '" data-i="' + esc(n) + '" data-a="' + esc(encodeURIComponent(a)) + '" title="' + esc(tip) + '">' +
+          '<b>' + esc(n || '?') + '</b><span class="a">' + esc(short) + '</span></div>';
+      })
+      .join('');
   }
 
   function appendLog(entry) {

@@ -1,4 +1,4 @@
-> 最后更新：2026-11-19 ｜ 当前版本：1.11.14（`package.json`）
+> 最后更新：2026-11-24 ｜ 当前版本：1.12.0（`package.json`；`tools/diag-mapping.js` 为未发布诊断工具）
 
 # MAINTENANCE
 
@@ -85,6 +85,7 @@ cx-exam-ai/
 | `tools/verify-cdp.mjs` | `node tools/verify-cdp.mjs [--keep] [--cdp=9222]` | `node tools/verify-cdp.mjs [--keep] [--cdp=9222]` | 真实浏览器端到端验证：自起两个静态服务（8790/8791 = 两个 origin，复现跨域存储隔离）+ headless Chrome（CDP），跑「设置中心向导 → 配置码 → 云同步(KV) → 考试页落库 → 悬浮球/面板 → E 段：本地同步 API + 多题型兜底 + 题下标注」**35 项断言**，用 `Input.dispatchMouseEvent` 发真实双击（球的交互是 pointer 链，合成 click 无效）。线上 Cloudflare 不可达时自动跳过 A9/C 段（本地 E 段覆盖同步逻辑） | `dist/` `.site/` `tools/shim.js` `tools/fixtures/exam-mock.html` `tools/fixtures/exam-mock-types.html` |
 | `tools/fixtures/exam-mock.html` | — | 模拟学习通考试页（`.questionLi` + `.stem_answer` + `check_answer` 点选行为），给 `verify-cdp.mjs` 当考试页夹具 | `tools/verify-cdp.mjs` |
 | `tools/fixtures/exam-mock-types.html` | — | **v1.11.0 新增**：多题型夹具（单选 0 / 简答 4 / 连线 11 / 听力 17 / 排序 13），覆盖 `shell=choice/text/match/media/choice`；E 段用它验证全题型兜底与题下标注 | `tools/verify-cdp.mjs` |
+| `tools/diag-mapping.js` | — | **2026-11-19 新增（未发布）**：现场取证脚本。粘进考试页控制台（只读、不改 DOM），逐题打印「位置键 / 页面字母标签 / data / 选项文本 / 是否被判已选 / 隐藏域」，并标出 `页面字母 ≠ 位置键` 的题。用于判断「AI 答案与页面勾选不符」是抓题层按键错位，还是落盘/重试链串题。**不是构建产物，不参与打包** | `src/03-scraper.js`（`parseOne`/`parseChapter`/`pickSame`）、`src/05-apply.js`（`answerChoice`/`answerJudgement`）、`src/08-main.js`（`answerNext`/`applyWithRetry`） |
 | `tools/build-site.js` | `node tools/build-site.js` | 清空并重建 `.site/`：拷贝 `index.html` 与 `settings.html` → `/`、`dist/` → `/dist/`、`images/` → `/images/`，输出文件数与体积。Cloudflare Pages/Workers 的构建命令就是它，`.site/` 已进 `.gitignore` | `dist/cx-exam-ai.user.js` `images/*` |
 | `images/alipay.png` `images/wechat_pay.png` | — | 收款码，README 与 index.html 共用；勿替换成别的图 | 无 |
 | `dist/cx-exam-ai.user.js` | — | 构建产物，三处安装链接的唯一目标；**只由 `node build.js` 生成** | `src/*.js` + `package.json` |
@@ -103,6 +104,16 @@ cx-exam-ai/
 | `08-main.js` | `sameAnswer` / `decryptIfNeeded` / `rowKeyOf`；fixWrong 判后比对；暂停不翻页；`answerNext` 失败不翻页 + 整卷填空补保存；缓存键带 qid 与图片指纹；入口对晚渲染题块轮询；`answers` 上限 400 |
 | `09-settings.js` | 数字空值不写 0；读图 `enabled` 与 `strategy` 联动；`fetchModels/testOne` 按 provider id 回写；`num()` 转义 |
 | `tools/test-dom.js` | 新增 [19] 12 项、[20] 4 项回归断言（vitest 无关，仍是零依赖 node 脚本） |
+
+**v1.11.15 对上述文件的补充（2026-11-19）**
+
+| 文件 | 新增/变化 |
+|---|---|
+| `01-core.js` | `engine.previewDelayMs=1500`：进页后自动切整卷预览的等待 |
+| `03-scraper.js` | `normalizeJudgeGroup(q)`：`hoverDiv + span[data=true/false]` 的判断题从"1 个空的小题组"还原成判断题（导出同名函数） |
+| `05-apply.js` | `answerJudgement(q,result,opts)` + `judgeSide(text)`（对/错文字点选、三口径验收）；`ensureBlankReady()` / `writeBlankOnce()` 拆分；`saveOne()` 单题页全页兜底；`apply` 末段用 `normPageAnswer` 折算；`answerGroup` 非字母键按位置取 |
+| `07-ui.js` | 小球单击「答一题」后回 toast：`preview` / `all-answered` / `#n 已答 · 下一题 #m` |
+| `08-main.js` | 删除 `answers` 持久缓存（`readAnswers/saveAnswer/cachedAnswer/cacheKey/ANSWERS_KEY`）；改为 `st.memo` + `memoGet/memoSet/resetMemo`；新增 `maybeEnterPreview()`、`scrollToNextUnanswered()`、`applyWithRetry()`；`answerNext()` 按 OCS 顺序重写（切预览 → 下一道未答 → 判 → 落盘 → 保存 → 自动推进）；`start()` 复用 `maybeEnterPreview`；boot 里按 `engine.previewDelayMs` 自动切预览 |
 
 ## 关键流程与数据流
 
@@ -338,6 +349,55 @@ Apply.apply(q, result)
 25. **提交前跑 `git status --short` 自查**：出现 `logs/`、`.cdp-profile/`、`.chrome-profile/`、`.shot-*.png` 说明 `.gitignore` 被绕过（多半是 `git add -f`）。这些目录含考试页面截图、登录态 Cookie、模型 Key，一旦推到公开仓库等于泄露，且从历史里清不掉。
 
 ## 变更记录
+
+### v1.12.0（2026-11-24）仅显示答案 · 右下角答案条 · 进页即判题 + 审查 P1 修复
+
+| 改动 | 涉及文件 |
+|---|---|
+| 新增 `ui.showOnly`（默认 true）与 `ui.answerCorner`（默认 true）；`engine.prefetchDelayMs` 默认 2000→800 | `01-core.js` `09-settings.js` |
+| 仅显示模式：`handleQuestion` / `answerNext` 判题后不落盘不翻页，答案进面板与答案条；面板新增「仅显示/自动点选」快捷按钮 | `08-main.js` `07-ui.js` |
+| 右下角答案条（Shadow 元素 `#anscorner`，固定 right/bottom 12px，可折叠）：题号+答案清单，选择题点击跳题、文本题点击复制剪贴板，头部显示已判/预取进度 | `07-ui.js` |
+| P1#1 `accept()` 里 `resolveAnswerKeys(...).keys` 空指针 → 判空沿用 winner 原文 | `04-ai.js` |
+| P1#2 `syncBoot()` 绕过 `ui.forcePull`：本地已有模型默认不覆盖，返回 `{skipped:true}`，boot 按跳过处理不标红 | `10-sync.js` `08-main.js` |
+| P1#3 断点续跑 `st.baseDone` 被 qlist 统计覆盖 → 取 max | `08-main.js` |
+| P1#4 判断题题型被猜成 single 时 `true/false` 隐藏域终验折算（两选项且值像布尔也走 judgeKey） | `03-scraper.js` |
+| `collect()` 加 250ms 短窗 memo（`invalidateCollect` 导出；`applyNextPage`、`Apply.apply`、`applyWithRetry` 处失效；换 document 自动失效） | `03-scraper.js` `05-apply.js` `08-main.js` |
+| `UI.unmount()` 联动清掉交卷检测 interval（句柄挂 `CXAI._finishTimer`）与 `Guard.uninstall()` | `07-ui.js` `08-main.js` |
+| 离线测试补 [21] 仅显示模式断言 + memo 失效插桩；版本升 1.12.0，README 更新日志同步 | `tools/test-dom.js` `00-header.js` `package.json` `README.md` |
+
+审查遗留（本轮未动，已记录）：判断题词表五处并行漂移、三套文本题型映射、localStorage 明文镜像 apiKey、`consumeConfigHash` 无确认导入、Gemini key 拼 URL、死代码清单（`waitChecked`/`currentAnswered`/`readTypeInput` 等）。后续按 P3→P4 顺序清理。
+
+### 未发布 · 诊断工具（2026-11-19）新增现场取证脚本 tools/diag-mapping.js
+
+用户反馈「实际给出的答案和勾选的选项明显不符」。本轮不改业务代码（未定位到具体题目的实机 DOM 证据），先补一把能一次定位的尺子：
+
+| 改动 | 文件 |
+|---|---|
+| 新增只读取证脚本（不改业务代码，不参与打包）：逐题打印位置键 / 页面字母 / data / 选项文本 / 选中态 / 隐藏域，并标出 `页面字母 ≠ 位置键` | `tools/diag-mapping.js` |
+
+**排查口径（配合本脚本判读）**，三条按概率排序：
+
+1. **抓题层按键是最可疑的一条**：`03-scraper.parseOne`（`.map((el, i) => key: String.fromCharCode(65 + i))`）与 `parseChapter`（同款）只按 DOM 位置发字母键，`cleanOption` 又把页面自带的「A、」前缀剥掉不再保留。页面字母标签顺序一旦与 DOM 顺序不同（选项乱序 / 共用选项池重排 / 上一题残影混进 `.questionLi`），模型说的 B 与点下去的元素就不是同一个。
+2. **重试链串题**：`08-main.applyWithRetry` 失败会 `relive(q)` → `03-scraper.pickSame`，而 `pickSame` 的通过线是 `bestScore >= 40`，而「选项文本全重合」本身就能拿满 40 分（qid 不同的扣分只在两边都有 qid 时生效）。于是两道选项池相同的题（判断题「对/错」、共用选项题、同类单选题）会互相命中，答案落到另一道题上。
+3. **显示口径不是 bug**：面板「答案」列印解析后的字母，`03d-mark` 的「页面」列印 `answerView(q)`，两者不同就会显式标「与 AI 不同」——那是报警，不是故障本身。
+
+### v1.11.15（2026-11-19）答一题对齐 OCS + 废弃跨场缓存 + 判断题/填空修复
+
+用户四条实测反馈，一次修完（`src/03-scraper.js` `src/05-apply.js` `src/08-main.js` `src/01-core.js` `src/07-ui.js`）：
+
+1. **不再缓存"之前查过的题"**：删掉 `Store('answers')` 持久缓存（`readAnswers/saveAnswer/cachedAnswer/cacheKey/ANSWERS_KEY` 全部下线），
+   判定结果只留在内存 `st.memo`（键 = `rowKeyOf`：qid 优先），`resetMemo()` 在每次开跑时清空。
+   预取仍然复用（同一页同一场），但跨页/跨场/跨天一律重判。日志文案改为「用本页预取好的判定」。
+2. **答一题 = OCS 的推进顺序**：新增 `maybeEnterPreview()`，进页/首次点小球都会先切「整卷预览」（`answer.preferPreview` 默认开，
+   新增 `engine.previewDelayMs`）；`answerNext()` 重写为「切预览 → 取下一道未答 → 判题 → `applyWithRetry` → 填空补保存 →
+   自动切下一题」：整卷页 `scrollToNextUnanswered()` 滚动+高亮下一题，单题页仍走无刷新翻页。小球单击会 toast 结果与下一题号。
+3. **判断题能答了**：根因是 `hoverDiv + span[data=true/false]` 皮肤被 `readGroupBlanks` 当成"1 个空的小题组"，
+   字母答案永远对不上 → 日志「小题组只落了 0/1 个空」。新增 `03-scraper.normalizeJudgeGroup()` 在抓题阶段还原成判断题
+   （选项键 A/B、文字折成对/错），`05-apply.answerJudgement()` 按「对/错」文字点选并用三条口径验收
+   （隐藏域折算 / 选中标记 / clickOne 自证）；`answerGroup` 另加"非字母键按位置取"兜底。
+4. **填空题第一次不输入**：`answerBlank()` 拆成 `ensureBlankReady()` + `writeBlankOnce()`：先等 UEditor 实例就绪
+   （`ensureEditorsAsync`），一次没写进去就重取题目再写一遍，失败原因写进日志。
+   另修 `saveOne()`：单题页的「保存」按钮常在题目容器外，只有一道题时允许全页兜底。
 
 ### v1.11.14（2026-11-19）小题组必须 N 段
 

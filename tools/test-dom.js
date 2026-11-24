@@ -978,6 +978,8 @@ function ok(cond, label, extra) {
     const holder2 = p4.body.querySelector('.questionList');
     holder2.childNodes.unshift(decoy);
     decoy.parentElement = holder2;
+    // 直接改 DOM：collect 的 250ms memo 必须手动失效
+    CXAI.Scraper.invalidateCollect();
 
     sandbox.document = p4.document;
     windowObj.document = p4.document;
@@ -1005,6 +1007,7 @@ function ok(cond, label, extra) {
       };
     });
     holder3.appendChild(ul2);
+    CXAI.Scraper.invalidateCollect();
 
     const r4 = await CXAI.Apply.apply(real, { keys: ['B'], answerText: 'B' });
     ok(r4.ok, '残影 + 重绘双重干扰下仍能落盘', r4);
@@ -1387,6 +1390,8 @@ function ok(cond, label, extra) {
     CXAI.Cfg.set('engine.prefetch', false);
     CXAI.Cfg.set('engine.bootstrapPollMs', 200);
     CXAI.Cfg.set('answer.preferPreview', false);
+    // 以下断言测的是"自动点选落盘"老链路：先把仅显示模式关掉（默认开）
+    CXAI.Cfg.set('ui.showOnly', false);
 
     const solveCalls = [];
     CXAI.AI.solve = async (q) => {
@@ -1429,6 +1434,15 @@ function ok(cond, label, extra) {
     applyCalls.length = 0;
     await Engine.start();
     ok(applyCalls.indexOf(q0.stem) >= 0, '判定与页面答案不一致时才重写', applyCalls.includes(q0.stem));
+
+    // --- [21] 仅显示答案模式（ui.showOnly，默认开）：判题照常，但绝不落盘
+    solveCalls.length = 0;
+    applyCalls.length = 0;
+    CXAI.Cfg.set('ui.showOnly', true);
+    await Engine.start();
+    ok(solveCalls.indexOf(q0.stem) >= 0, '仅显示模式仍会判定', solveCalls.length);
+    ok(applyCalls.length === 0, '仅显示模式不落盘（不点击选项）', applyCalls.length);
+    CXAI.Cfg.set('ui.showOnly', false);
   }
 
   console.log(`\n结果：${pass} 通过 / ${fail} 失败（AI 请求 ${CALLS} 次）`);

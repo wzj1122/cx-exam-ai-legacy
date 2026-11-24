@@ -1026,18 +1026,24 @@ CXAI.AI = (function () {
       ocrBy: vctx.vision ? vctx.vision.providerLabel : ''
     };
 
-    const accept = (stage) => ({
-      keys: resolveAnswerKeys(t.winner.key, question).keys,
-      answerText: t.winner.key,
-      confidence: bestConfidence(votes, t.winner.key),
-      reason: bestReason(votes, t.winner.key),
-      stage,
-      ratio: +t.ratio.toFixed(3),
-      votes: votes.map(voteSummary),
-      errors,
-      vision: visionMeta,
-      lowConfidence: bestConfidence(votes, t.winner.key) < (judgeCfg.minConfidence || 0.55) || t.ratio < 0.5
-    });
+    const accept = (stage) => {
+      // resolveAnswerKeys 对选择题可能返回 null（胜出答案映射不到任何选项）：
+      // 直接 .keys 会抛 TypeError，整题掉进 rescue 链且报错信息难以排查（2026-11-24 审查 #1）
+      const mapped = resolveAnswerKeys(t.winner.key, question);
+      const keys = mapped && mapped.keys ? mapped.keys : [];
+      return {
+        keys,
+        answerText: t.winner.key,
+        confidence: bestConfidence(votes, t.winner.key),
+        reason: bestReason(votes, t.winner.key),
+        stage,
+        ratio: +t.ratio.toFixed(3),
+        votes: votes.map(voteSummary),
+        errors,
+        vision: visionMeta,
+        lowConfidence: bestConfidence(votes, t.winner.key) < (judgeCfg.minConfidence || 0.55) || t.ratio < 0.5
+      };
+    };
 
     // 单模型 / 一致度达标 -> 直接采纳
     if (panel.length === 1 || judgeCfg.mode === 'single' || t.ratio >= (judgeCfg.voteThreshold || 0.7)) {
