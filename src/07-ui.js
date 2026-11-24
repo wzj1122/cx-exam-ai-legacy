@@ -306,23 +306,26 @@ details.adv[open] > summary, details.more[open] > summary { margin-bottom:6px; }
 .help { font-size:10.5px; color:#8a93a3; line-height:1.6; margin-top:2px; }
 .pv .mhint { font-size:10.5px; color:#8a93a3; }
 .tagv { display:inline-block; font-size:9.5px; padding:1px 4px; border-radius:3px; background:#eef4ff; color:#2563eb; margin-left:4px; }
-/* ---------------- 右下角答案条（仅显示答案模式的展示面） ---------------- */
-.anscorner { position:fixed; right:12px; bottom:12px; z-index:2; width:236px; max-height:46vh;
-  display:flex; flex-direction:column; background:rgba(255,255,255,.97); border:1px solid #dfe6f0;
-  border-radius:10px; box-shadow:0 6px 24px rgba(31,41,55,.16); font-size:12px; color:#1f2937; overflow:hidden; }
-.anscorner .hd { display:flex; align-items:center; gap:6px; padding:7px 10px; cursor:pointer;
-  background:#f7f9fd; border-bottom:1px solid #edf0f6; font-weight:600; user-select:none; }
-.anscorner .hd .cnt { margin-left:auto; color:#6b7280; font-weight:400; font-size:10.5px; }
-.anscorner .hd .fold { color:#9aa3b2; padding:0 2px; }
+/* ---------------- 右下角答案条（与悬浮球同一套浅色系，更淡更不抢眼） ---------------- */
+.anscorner { position:fixed; right:12px; bottom:12px; z-index:2; width:216px; max-height:44vh;
+  display:flex; flex-direction:column; background:rgba(248,250,252,.72); border:1px solid rgba(203,213,225,.45);
+  border-radius:12px; box-shadow:0 2px 10px rgba(16,24,40,.07); backdrop-filter:blur(3px);
+  font-size:11.5px; color:#7c8698; overflow:hidden; }
+.anscorner .hd { display:flex; align-items:center; gap:6px; padding:6px 10px; cursor:pointer;
+  background:rgba(255,255,255,.4); border-bottom:1px solid rgba(226,232,240,.55); font-weight:600;
+  color:#8a93a3; user-select:none; }
+.anscorner .hd b { color:#9aa3b2; font-weight:600; letter-spacing:.3px; }
+.anscorner .hd .cnt { margin-left:auto; color:#a5aebc; font-weight:400; font-size:10px; }
+.anscorner .hd .fold { color:#b4bcc8; padding:0 2px; }
 .anscorner.folded .list { display:none; }
 .anscorner.folded { width:auto; max-height:none; }
-.anscorner .list { overflow-y:auto; padding:4px 6px 8px; }
-.anscorner .arow { display:flex; gap:6px; padding:4px 6px; border-radius:6px; cursor:pointer; line-height:1.45; }
-.anscorner .arow:hover { background:#eef4ff; }
-.anscorner .arow b { flex:none; min-width:26px; color:#2563eb; font-weight:600; }
-.anscorner .arow .a { flex:1; word-break:break-all; }
-.anscorner .arow.txt .a { color:#92400e; }
-.anscorner .empty { padding:8px 10px; color:#9aa3b2; font-size:11px; line-height:1.5; }
+.anscorner .list { overflow-y:auto; padding:3px 5px 7px; }
+.anscorner .arow { display:flex; gap:6px; padding:3px 6px; border-radius:7px; cursor:pointer; line-height:1.45; }
+.anscorner .arow:hover { background:rgba(238,244,255,.75); }
+.anscorner .arow b { flex:none; min-width:24px; color:#7fa3d9; font-weight:600; }
+.anscorner .arow .a { flex:1; word-break:break-all; color:#8a93a3; }
+.anscorner .arow.txt .a { color:#b08a5a; }
+.anscorner .empty { padding:7px 10px; color:#b4bcc8; font-size:10.5px; line-height:1.5; }
 `;
   /* ---------------- 结构 ---------------- */
 
@@ -372,6 +375,7 @@ details.adv[open] > summary, details.more[open] > summary { margin-bottom:6px; }
   <div class="gmode" id="gmode">
     <div class="g" data-dir="left">← 左滑：答一题</div>
     <div class="g" data-dir="up">↑ 上滑：自动连答</div>
+    <div class="g" data-dir="down">↓ 下滑：隐藏/显示答案条</div>
   </div>
   <div class="gtoast" id="gtoast"></div>
   <div class="ball" id="ball"><span id="balllabel">CX</span></div>
@@ -405,6 +409,7 @@ details.adv[open] > summary, details.more[open] > summary { margin-bottom:6px; }
     }
     bind();
     setupBall();
+    setupCornerDrag();
     render();
 
   }
@@ -797,6 +802,7 @@ details.adv[open] > summary, details.more[open] > summary { margin-bottom:6px; }
         let dir = '';
         if (dx <= -GEST && Math.abs(dx) >= Math.abs(dy)) dir = 'left';
         else if (dy <= -GEST && Math.abs(dy) > Math.abs(dx)) dir = 'up';
+        else if (dy >= GEST && Math.abs(dy) > Math.abs(dx)) dir = 'down';
         if (dir !== drag.dir) {
           drag.dir = dir;
           markDir(dir);
@@ -828,6 +834,7 @@ details.adv[open] > summary, details.more[open] > summary { margin-bottom:6px; }
       if (d.lp) {
         if (d.dir === 'left') setMode('single');
         else if (d.dir === 'up') setMode('auto');
+        else if (d.dir === 'down') toggleCorner();
         else toast('已取消（没选方向）');
         return;
       }
@@ -1001,12 +1008,13 @@ details.adv[open] > summary, details.more[open] > summary { margin-bottom:6px; }
   function renderCorner(rows) {
     const box = $('#anscorner');
     if (!box) return;
-    const show = CXAI.Cfg.get('ui.answerCorner', true) !== false;
+    const show = CXAI.Cfg.get('ui.answerCorner', true) !== false && !cornerHidden();
     box.style.display = show ? 'flex' : 'none';
     if (!show) return;
     try {
       if (CXAI.Store.get('ansCornerFold', false)) box.classList.add('folded');
     } catch (e) {}
+    applyCornerPos(box);
     const list = $('#anscorner-list');
     const cnt = $('#anscorner-count');
     if (!list) return;
@@ -1032,6 +1040,85 @@ details.adv[open] > summary, details.more[open] > summary { margin-bottom:6px; }
           '<b>' + esc(n || '?') + '</b><span class="a">' + esc(short) + '</span></div>';
       })
       .join('');
+  }
+
+  /* ---- 答案条：隐藏/显示 + 拖动 ----
+   * 隐藏：长按 CX 球下滑（toggleCorner，持久化 ansCornerHidden）；
+   * 拖动：按住答案条头部拖（移动超过 8px 算拖动，否则还是"点击折叠"），位置存 cornerPos。
+   */
+  function cornerHidden() {
+    try { return CXAI.Store.get('ansCornerHidden', false) === true; } catch (e) { return false; }
+  }
+
+  function toggleCorner() {
+    const next = !cornerHidden();
+    try { CXAI.Store.set('ansCornerHidden', next); } catch (e) {}
+    const box = $('#anscorner');
+    if (box) box.style.display = next ? 'none' : 'flex';
+    toast(next ? '答案条已隐藏（长按球下滑可再打开）' : '答案条已显示');
+    render();
+  }
+
+  /** 把持久化的答案条位置夹回视口内并应用（默认仍走 CSS 的 right/bottom 靠边） */
+  function applyCornerPos(box) {
+    try {
+      const pos = CXAI.Store.get('cornerPos', null);
+      if (!pos || pos.left == null) return;
+      const w = window.innerWidth || 1024;
+      const h = window.innerHeight || 768;
+      const rect = box.getBoundingClientRect();
+      const bw = rect.width || 216;
+      const bh = rect.height || 40;
+      const left = Math.min(Math.max(4, pos.left), Math.max(4, w - bw - 4));
+      const top = Math.min(Math.max(4, pos.top), Math.max(4, h - bh - 4));
+      box.style.right = 'auto';
+      box.style.bottom = 'auto';
+      box.style.left = Math.round(left) + 'px';
+      box.style.top = Math.round(top) + 'px';
+    } catch (e) {}
+  }
+
+  /** 答案条头部拖动：按住 .hd 拖走整条；没超过 8px 的按下抬起 = 折叠/展开 */
+  function setupCornerDrag() {
+    const box = $('#anscorner');
+    const hd = box ? box.querySelector('.hd') : null;
+    if (!box || !hd || hd._cxaiDrag) return;
+    hd._cxaiDrag = true;
+    let drag = null;
+    hd.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0) return;
+      const r = box.getBoundingClientRect();
+      drag = { sx: e.clientX, sy: e.clientY, ox: r.left, oy: r.top, moved: false };
+      try { hd.setPointerCapture(e.pointerId); } catch (err) {}
+      e.preventDefault();
+    });
+    hd.addEventListener('pointermove', (e) => {
+      if (!drag) return;
+      const dx = e.clientX - drag.sx;
+      const dy = e.clientY - drag.sy;
+      if (!drag.moved && Math.abs(dx) > 8 && Math.abs(dx) >= Math.abs(dy) * 0.4) drag.moved = true;
+      if (!drag.moved && Math.abs(dy) > 8 && Math.abs(dy) >= Math.abs(dx) * 0.4) drag.moved = true;
+      if (!drag.moved) return;
+      box.style.right = 'auto';
+      box.style.bottom = 'auto';
+      box.style.left = Math.round(drag.ox + dx) + 'px';
+      box.style.top = Math.round(drag.oy + dy) + 'px';
+      e.preventDefault();
+    });
+    const done = (e) => {
+      if (!drag) return;
+      const d = drag;
+      drag = null;
+      try { hd.releasePointerCapture(e.pointerId); } catch (err) {}
+      if (d.moved) {
+        const r = box.getBoundingClientRect();
+        try { CXAI.Store.set('cornerPos', { left: Math.round(r.left), top: Math.round(r.top) }); } catch (err) {}
+        applyCornerPos(box);
+      }
+      // 没拖动 → 交回原有 data-act="anscorner-fold" 的点击逻辑（click 会自然触发）
+    };
+    hd.addEventListener('pointerup', done);
+    hd.addEventListener('pointercancel', () => { drag = null; });
   }
 
   function appendLog(entry) {
