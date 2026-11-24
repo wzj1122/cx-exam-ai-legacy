@@ -721,27 +721,15 @@ details.adv[open] > summary, details.more[open] > summary { margin-bottom:6px; }
     const wrap = root.querySelector('.wrap');
     const gmode = $('#gmode');
     if (!ball || !wrap) return;
+    // 位置不记忆（2026-11-24）：每次进页球都回到默认右下角（答案条上方），
+    // 用户本次页面内可以拖动，换页/刷新自动复位。
     try {
-      const pos = CXAI.Store.get('uiPos', null);
-      if (pos && pos.left != null) {
-        const c = clampBallPos(pos.left, pos.top);
-        wrap.style.left = c.left + 'px';
-        wrap.style.top = c.top + 'px';
-        wrap.style.right = 'auto';
-        wrap.style.bottom = 'auto';
-        if (c.left !== Math.round(Number(pos.left)) || c.top !== Math.round(Number(pos.top))) {
-          // 旧坐标已越界：顺手写回修正值，免得下次打开又跑出去
-          try {
-            CXAI.Store.set('uiPos', c);
-          } catch (e) {}
-        }
-      }
       const m = CXAI.Store.get('ballMode', '');
       if (m === 'auto' || m === 'single') state.mode = m;
     } catch (e) {}
     placePanel();
 
-    // 窗口尺寸变化（含换显示器、缩放、全屏切换）后把球和面板拉回视口内
+    // 窗口尺寸变化后把球拉回视口内
     try {
       resizeHandler = () => {
         try {
@@ -752,12 +740,9 @@ details.adv[open] > summary, details.more[open] > summary { margin-bottom:6px; }
             wrap.style.top = c.top + 'px';
             wrap.style.right = 'auto';
             wrap.style.bottom = 'auto';
-            try {
-              CXAI.Store.set('uiPos', c);
-            } catch (e) {}
           }
           placePanel(c.left);
-          try { avoidCornerOverlap(); } catch (e2) {}
+          try { syncBallToCorner(); } catch (e2) {}
         } catch (e) {}
       };
       window.addEventListener('resize', resizeHandler);
@@ -822,6 +807,8 @@ details.adv[open] > summary, details.more[open] > summary { margin-bottom:6px; }
       wrap.style.top = top + 'px';
       wrap.style.right = 'auto';
       wrap.style.bottom = 'auto';
+      // 球与答案条锁定：拖球时答案条跟着吸附到球正下方
+      try { syncCornerToBall(); } catch (err) {}
       e.preventDefault();
     });
 
@@ -844,9 +831,7 @@ details.adv[open] > summary, details.more[open] > summary { margin-bottom:6px; }
         return;
       }
       const r = wrap.getBoundingClientRect();
-      try {
-        CXAI.Store.set('uiPos', { left: Math.round(r.left), top: Math.round(r.top) });
-      } catch (err) {}
+      // 位置不记忆：只在本页内生效，换页/刷新自动复位（2026-11-24）
       placePanel(r.left);
     };
 
@@ -875,22 +860,47 @@ details.adv[open] > summary, details.more[open] > summary { margin-bottom:6px; }
     } catch (e) {}
   }
 
-  /** 球和答案条避让（2026-11-24）：答案条可见且与球重叠时，把球挪到答案条正上方贴边 */
-  function avoidCornerOverlap() {
+  /**
+   * 球与答案条锁定（2026-11-24）：两个元素相对位置恒定 —— 球始终在答案条正上方 10px、
+   * 右边缘对齐。拖谁两个一起走；进页复位到默认右下角（答案条 right/bottom 12px，位置不记忆）。
+   * 答案条隐藏时球回落到 CSS 默认位（右下角）。
+   */
+  function syncBallToCorner() {
+    try {
+      const box = $('#anscorner');
+      const wrapEl = root && root.querySelector('.wrap');
+      if (!box || !wrapEl) return;
+      if (box.style.display === 'none') {
+        // 隐藏时球回默认位：清掉 JS 位移，走 .wrap 的 right/bottom CSS
+        wrapEl.style.left = '';
+        wrapEl.style.top = '';
+        wrapEl.style.right = '';
+        wrapEl.style.bottom = '';
+        return;
+      }
+      const c = box.getBoundingClientRect();
+      if (!c.width) return;
+      const b = wrapEl.getBoundingClientRect();
+      wrapEl.style.left = Math.max(4, Math.round(c.right - b.width)) + 'px';
+      wrapEl.style.top = Math.max(4, Math.round(c.top - b.height - 10)) + 'px';
+      wrapEl.style.right = 'auto';
+      wrapEl.style.bottom = 'auto';
+    } catch (e) {}
+  }
+
+  /** 反向：以球为锚，把答案条吸附到球正下方 10px、右边缘对齐（拖球时用） */
+  function syncCornerToBall() {
     try {
       const box = $('#anscorner');
       const wrapEl = root && root.querySelector('.wrap');
       if (!box || !wrapEl || box.style.display === 'none') return;
-      const c = box.getBoundingClientRect();
-      if (!c.width || !c.height) return;
       const b = wrapEl.getBoundingClientRect();
-      const overlap = !(b.right < c.left + 4 || b.left > c.right - 4 || b.bottom < c.top + 4 || b.top > c.bottom - 4);
-      if (!overlap) return;
-      const top = Math.max(4, Math.round(c.top - b.height - 12));
-      wrapEl.style.top = top + 'px';
-      wrapEl.style.left = Math.max(4, Math.round(c.right - b.width - 6)) + 'px';
-      wrapEl.style.right = 'auto';
-      wrapEl.style.bottom = 'auto';
+      const c = box.getBoundingClientRect();
+      if (!b.width || !c.width) return;
+      box.style.left = Math.max(4, Math.round(b.right - c.width)) + 'px';
+      box.style.top = Math.max(4, Math.round(b.bottom + 10)) + 'px';
+      box.style.right = 'auto';
+      box.style.bottom = 'auto';
     } catch (e) {}
   }
 
@@ -924,7 +934,7 @@ details.adv[open] > summary, details.more[open] > summary { margin-bottom:6px; }
     renderQGrid(rows);
     renderQDetail(rows);
     renderCorner(rows);
-    avoidCornerOverlap();
+    syncBallToCorner();
     const soBtn = $('#btn-showonly');
     if (soBtn) {
       const on = CXAI.Cfg.get('ui.showOnly', true) === true;
@@ -1035,7 +1045,6 @@ details.adv[open] > summary, details.more[open] > summary { margin-bottom:6px; }
     try {
       if (CXAI.Store.get('ansCornerFold', false)) box.classList.add('folded');
     } catch (e) {}
-    applyCornerPos(box);
     const list = $('#anscorner-list');
     const cnt = $('#anscorner-count');
     if (!list) return;
@@ -1064,8 +1073,9 @@ details.adv[open] > summary, details.more[open] > summary { margin-bottom:6px; }
   }
 
   /* ---- 答案条：隐藏/显示 + 拖动 ----
-   * 隐藏：长按 CX 球下滑（toggleCorner，持久化 ansCornerHidden）；
-   * 拖动：按住答案条头部拖（移动超过 8px 算拖动，否则还是"点击折叠"），位置存 cornerPos。
+   * 隐藏：长按 CX 球下滑（toggleCorner，状态持久化 ansCornerHidden）；
+   * 拖动：按住答案条头部拖（移动超过 8px 算拖动，否则还是"点击折叠"）。
+   * 位置不持久化：本页内自由拖，换考试页自动复位到右下角默认位（2026-11-24）。
    */
   function cornerHidden() {
     try { return CXAI.Store.get('ansCornerHidden', false) === true; } catch (e) { return false; }
@@ -1080,36 +1090,21 @@ details.adv[open] > summary, details.more[open] > summary { margin-bottom:6px; }
     render();
   }
 
-  /** 把持久化的答案条位置夹回视口内并应用（默认仍走 CSS 的 right/bottom 靠边） */
-  function applyCornerPos(box) {
-    try {
-      const pos = CXAI.Store.get('cornerPos', null);
-      if (!pos || pos.left == null) return;
-      const w = window.innerWidth || 1024;
-      const h = window.innerHeight || 768;
-      const rect = box.getBoundingClientRect();
-      const bw = rect.width || 216;
-      const bh = rect.height || 40;
-      const left = Math.min(Math.max(4, pos.left), Math.max(4, w - bw - 4));
-      const top = Math.min(Math.max(4, pos.top), Math.max(4, h - bh - 4));
-      box.style.right = 'auto';
-      box.style.bottom = 'auto';
-      box.style.left = Math.round(left) + 'px';
-      box.style.top = Math.round(top) + 'px';
-    } catch (e) {}
-  }
-
   /** 答案条头部拖动：按住 .hd 拖走整条；没超过 8px 的按下抬起 = 折叠/展开 */
   function setupCornerDrag() {
     const box = $('#anscorner');
     const hd = box ? box.querySelector('.hd') : null;
+    const wrapEl = root ? root.querySelector('.wrap') : null;
     if (!box || !hd || hd._cxaiDrag) return;
     hd._cxaiDrag = true;
     let drag = null;
     hd.addEventListener('pointerdown', (e) => {
       if (e.button !== 0) return;
       const r = box.getBoundingClientRect();
-      drag = { sx: e.clientX, sy: e.clientY, ox: r.left, oy: r.top, moved: false };
+      const wr = wrapEl ? wrapEl.getBoundingClientRect() : null;
+      // 拖答案条时记录球相对答案条的偏移：两个锁死，一起走
+      drag = { sx: e.clientX, sy: e.clientY, ox: r.left, oy: r.top, moved: false,
+        ballDx: wr ? wr.left - r.left : 0, ballDy: wr ? wr.top - r.top : 0 };
       try { hd.setPointerCapture(e.pointerId); } catch (err) {}
       e.preventDefault();
     });
@@ -1124,6 +1119,12 @@ details.adv[open] > summary, details.more[open] > summary { margin-bottom:6px; }
       box.style.bottom = 'auto';
       box.style.left = Math.round(drag.ox + dx) + 'px';
       box.style.top = Math.round(drag.oy + dy) + 'px';
+      if (wrapEl) {
+        wrapEl.style.right = 'auto';
+        wrapEl.style.bottom = 'auto';
+        wrapEl.style.left = Math.round(drag.ox + dx + drag.ballDx) + 'px';
+        wrapEl.style.top = Math.round(drag.oy + dy + drag.ballDy) + 'px';
+      }
       e.preventDefault();
     });
     const done = (e) => {
@@ -1132,10 +1133,7 @@ details.adv[open] > summary, details.more[open] > summary { margin-bottom:6px; }
       drag = null;
       try { hd.releasePointerCapture(e.pointerId); } catch (err) {}
       if (d.moved) {
-        const r = box.getBoundingClientRect();
-        try { CXAI.Store.set('cornerPos', { left: Math.round(r.left), top: Math.round(r.top) }); } catch (err) {}
-        applyCornerPos(box);
-        try { avoidCornerOverlap(); } catch (err) {}
+        // 位置不落盘：本页内自由拖，换考试页自动复位（球已经跟着一起走了）
       }
       // 没拖动 → 交回原有 data-act="anscorner-fold" 的点击逻辑（click 会自然触发）
     };
