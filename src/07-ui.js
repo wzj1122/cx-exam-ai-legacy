@@ -757,6 +757,7 @@ details.adv[open] > summary, details.more[open] > summary { margin-bottom:6px; }
             } catch (e) {}
           }
           placePanel(c.left);
+          try { avoidCornerOverlap(); } catch (e2) {}
         } catch (e) {}
       };
       window.addEventListener('resize', resizeHandler);
@@ -874,6 +875,25 @@ details.adv[open] > summary, details.more[open] > summary { margin-bottom:6px; }
     } catch (e) {}
   }
 
+  /** 球和答案条避让（2026-11-24）：答案条可见且与球重叠时，把球挪到答案条正上方贴边 */
+  function avoidCornerOverlap() {
+    try {
+      const box = $('#anscorner');
+      const wrapEl = root && root.querySelector('.wrap');
+      if (!box || !wrapEl || box.style.display === 'none') return;
+      const c = box.getBoundingClientRect();
+      if (!c.width || !c.height) return;
+      const b = wrapEl.getBoundingClientRect();
+      const overlap = !(b.right < c.left + 4 || b.left > c.right - 4 || b.bottom < c.top + 4 || b.top > c.bottom - 4);
+      if (!overlap) return;
+      const top = Math.max(4, Math.round(c.top - b.height - 12));
+      wrapEl.style.top = top + 'px';
+      wrapEl.style.left = Math.max(4, Math.round(c.right - b.width - 6)) + 'px';
+      wrapEl.style.right = 'auto';
+      wrapEl.style.bottom = 'auto';
+    } catch (e) {}
+  }
+
   function render() {
     if (!root) return;
     const set = (id, v) => {
@@ -904,6 +924,7 @@ details.adv[open] > summary, details.more[open] > summary { margin-bottom:6px; }
     renderQGrid(rows);
     renderQDetail(rows);
     renderCorner(rows);
+    avoidCornerOverlap();
     const soBtn = $('#btn-showonly');
     if (soBtn) {
       const on = CXAI.Cfg.get('ui.showOnly', true) === true;
@@ -1114,6 +1135,7 @@ details.adv[open] > summary, details.more[open] > summary { margin-bottom:6px; }
         const r = box.getBoundingClientRect();
         try { CXAI.Store.set('cornerPos', { left: Math.round(r.left), top: Math.round(r.top) }); } catch (err) {}
         applyCornerPos(box);
+        try { avoidCornerOverlap(); } catch (err) {}
       }
       // 没拖动 → 交回原有 data-act="anscorner-fold" 的点击逻辑（click 会自然触发）
     };
