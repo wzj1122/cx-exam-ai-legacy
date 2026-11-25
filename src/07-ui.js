@@ -1039,7 +1039,7 @@ details.adv[open] > summary, details.more[open] > summary { margin-bottom:6px; }
   function renderCorner(rows) {
     const box = $('#anscorner');
     if (!box) return;
-    const show = CXAI.Cfg.get('ui.answerCorner', true) !== false && !cornerHidden();
+    const show = CXAI.Cfg.get('ui.answerCorner', false) === true && !cornerHidden();
     box.style.display = show ? 'flex' : 'none';
     if (!show) return;
     try {

@@ -999,7 +999,7 @@ CXAI.Engine = (function () {
     opt = opt || {};
     if (st.prefetching) return st.prefetchPromise || 0;
     st.prefetching = true;
-    const concurrency = Math.max(1, Math.min(4, Number(CXAI.Cfg.get('engine.prefetchConcurrency', 2)) || 2));
+    const concurrency = Math.max(1, Math.min(8, Number(CXAI.Cfg.get('engine.prefetchConcurrency', 4)) || 4));
     const overwrite = CXAI.Cfg.get('apply.overwriteAnswered', false);
     let queue = [];
     try {

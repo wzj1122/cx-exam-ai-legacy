@@ -8,6 +8,7 @@ logs/
 
 # Chrome / CDP 用户数据目录（含登录态 Cookie，绝对不能提交）
 .cdp-profile/
+.cdp-main/
 .chrome-profile/
 .chrome-*/
 

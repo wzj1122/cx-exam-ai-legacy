@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         CX 考试 AI 大脑 · 学习通考试自动答题
 // @namespace    https://github.com/wzj1122/cx-exam-ai
-// @version        1.12.0
+// @version        1.13.0
 // @description  超星学习通考试页专用：自动抓题 + 加密字体解密 + 附件题（PDF 题干）逐页转图 + 多模型交叉判定（无需题库）+ 拟人化点选。参考 ocsjs 架构重写。
 // @author       wzj1122
 // @license      MIT
@@ -29,8 +29,8 @@
 
 /* 全局命名空间：所有模块挂载到 CXAI 上，模块之间只依赖它 */
 var CXAI = {};
-CXAI.__version = "1.12.0";
-CXAI.__builtAt = "2026-11-24T15:01:16.367Z";
+CXAI.__version = "1.13.0";
+CXAI.__builtAt = "2026-11-25T00:38:41.388Z";
 
 /* ==================== 01-core.js ==================== */
 /* ---------------- 配置 / 存储 / 工具 ---------------- */
@@ -306,8 +306,8 @@ CXAI.DEFAULT_CONFIG = {
      * 这样点小球"答一题"时是直接落盘、几乎不用等模型。
      */
     prefetch: true,
-    /** 预取并发（别开太大，省 token 也少见异常） */
-    prefetchConcurrency: 2,
+    /** 预取并发（默认 4：进考试页先把答案并行缓存好，点球时几乎不用等） */
+    prefetchConcurrency: 4,
     /** 预取开始前的等待，等题块稳定（2026-11-24 缩短：进页即判题） */
     prefetchDelayMs: 800,
     /** 进页后自动切「整卷预览」的等待（题块要先渲染出来） */
@@ -324,8 +324,9 @@ CXAI.DEFAULT_CONFIG = {
      *   false = 旧自动模式：判定后拟人化点选落盘。
      */
     showOnly: true,
-    /** 右下角答案条（题号 + 答案清单，选择题点击跳题、文本题点击复制） */
-    answerCorner: true,
+    /** 右下角答案条（题号 + 答案清单，选择题点击跳题、文本题点击复制）
+     *  2026-11-25 用户要求：默认隐藏，去设置中心「运行」里手动启用。 */
+    answerCorner: false,
     /** 独立设置中心地址；留空 = 用脚本内置的官方地址（换部署位时才需要填） */
     settingsURL: '',
     /** 设置中心：高级模式（显示权重/温度/阈值/超时/运行/备份/诊断），默认关 */
@@ -1768,6 +1769,55 @@ CXAI.Scraper = (function () {
     return els;
   }
 
+  /**
+   * 选项三元组：页面显示字母 / 服务端真正提交的键 / 选项文本。
+   * randomOptions=true 时页面显示 A、span[data] 却是 D：
+   * key 保持页面显示字母（模型/UI 都用它），另存 serverKey，
+   * 读回隐藏域时先映射回显示字母再比较，避免"答对点错"。
+   */
+  function optionMeta(el, i) {
+    const holder =
+      (el.closest && (el.closest('.answerBg') || el.closest('.hoverDiv') || el.closest('li'))) || el;
+    let labelEl = null;
+    try {
+      labelEl =
+        (holder.querySelector && holder.querySelector('.num_option, .num_option_dx, .option_num, .num, span[choice_name]')) ||
+        (el.querySelector && el.querySelector('.num_option, .num_option_dx, .option_num, .num')) ||
+        null;
+    } catch (e) {}
+    const raw = String(el.innerText || el.textContent || '').trim();
+    let display = '';
+    if (labelEl) {
+      display = String(labelEl.textContent || '')
+        .replace(/[^A-Za-z对错]/g, '')
+        .trim()
+        .toUpperCase();
+    }
+    if (!display) {
+      const m = /^\s*([A-Ha-h])\s*[、.．)）:：]/.exec(raw);
+      if (m) display = m[1].toUpperCase();
+    }
+    if (!display || display.length > 2) display = String.fromCharCode(65 + i);
+
+    let serverKey = '';
+    const candidates = [
+      labelEl && labelEl.getAttribute && labelEl.getAttribute('data'),
+      labelEl && labelEl.getAttribute && labelEl.getAttribute('choice_name'),
+      holder.getAttribute && holder.getAttribute('data'),
+      holder.getAttribute && holder.getAttribute('choice_name'),
+      holder.getAttribute && holder.getAttribute('data-value'),
+      holder.getAttribute && holder.getAttribute('value')
+    ];
+    for (const c of candidates) {
+      const v = String(c == null ? '' : c).trim();
+      if (!v) continue;
+      if (/^\d{6,}$/.test(v)) continue;
+      serverKey = v.toUpperCase();
+      break;
+    }
+    return { displayLabel: display, serverKey: serverKey, holder: holder };
+  }
+
   /** 选中态类名：check_answer / check_answer_dx / checkAnswer / checked / selected …（排除 un* 反向前缀） */
   const SEL_TOKEN = /^(check_?answer\w*|checked|selected|active|chosed|chosen|curSelected)$/i;
 
@@ -1925,11 +1975,20 @@ CXAI.Scraper = (function () {
      */
     const byUuid = new Map();
     const stems = {};
+    // 顶层普通选项的 span.addChoice[qid] 里 qid 就是本题题号；
+    // 只有小题组的空才用另一套 UUID。把它排除，否则普通选择题会被
+    // 误判成"1 个空的小题组"，落盘走 answerGroup 而不是 answerChoice
+    // （randomOptions 页面尤其明显：显示 A、data=D，结果点到别的选项）。
+    let selfQid = '';
+    try {
+      selfQid = qidOf(root);
+    } catch (e) {}
     try {
       Array.from(root.querySelectorAll('.hoverDiv')).forEach((el) => {
         const tag = el.querySelector('span[data][qid], span[data]');
         if (!tag) return;
         const uuid = String(tag.getAttribute('qid') || '');
+        if (!uuid || uuid === selfQid) return;
         const key = String(tag.getAttribute('data') || '').trim().toUpperCase();
         if (!uuid || !key) return;
         if (!stems[uuid]) {
@@ -2016,6 +2075,7 @@ CXAI.Scraper = (function () {
     } catch (e) {
       return [];
     }
+    if (selfQid) els = els.filter((el) => String(el.getAttribute('qid') || '') !== selfQid);
     if (!els.length) return [];
     const qids = [];
     els.forEach(function (el) {
@@ -2118,8 +2178,11 @@ CXAI.Scraper = (function () {
 
     const options = optionEls.map((el, i) => {
       const raw = (el.innerText || el.textContent || '').trim();
+      const meta = optionMeta(el, i);
       return {
-        key: String.fromCharCode(65 + i),
+        key: meta.displayLabel,
+        displayLabel: meta.displayLabel,
+        serverKey: meta.serverKey,
         text: cleanOption(raw, i),
         raw,
         el,
@@ -2360,9 +2423,44 @@ CXAI.Scraper = (function () {
     // replace(/[^A-H]/g,'') 清成空串，"点了也选了"却永远报写入失败）。
     const looksBool = /^(true|false|t|f|1|0|对|错|正确|错误|是|否|√|×)$/i.test(v);
     const isJudge = q && (q.type === 'judgement' || (looksBool && (q.options || []).length === 2));
-    if (!isJudge) return /^[A-H]+$/i.test(v) ? v.toUpperCase() : v;
+    if (!isJudge) return toDisplayKeys(q, v);
     const k = judgeKey(q, v);
-    return k || (/^[A-H]+$/i.test(v) ? v.toUpperCase() : v);
+    return k ? toDisplayKeys(q, k) : toDisplayKeys(q, v);
+  }
+
+  /**
+   * 服务端键 → 页面显示字母。
+   * 只用于把隐藏域里的值折算成"模型和 UI 看到的字母"；
+   * 点击仍然走选项元素本身，所以不会出现"答对点错"。
+   */
+  function toDisplayKeys(q, raw) {
+    const s = String(raw == null ? '' : raw).trim();
+    const opts = (q && q.options) || [];
+    if (!s || !opts.length) return s;
+    const lookup = function (tok) {
+      const u = String(tok || '').trim().toUpperCase();
+      if (!u) return '';
+      const byServer = opts.filter(function (o) {
+        return String(o.serverKey || '').toUpperCase() === u;
+      })[0];
+      if (byServer) return byServer.key;
+      const byDisplay = opts.filter(function (o) {
+        return String(o.displayLabel || o.key || '').toUpperCase() === u;
+      })[0];
+      if (byDisplay) return byDisplay.key;
+      return '';
+    };
+    const whole = lookup(s);
+    if (whole) return whole;
+    if (/^[A-H]+$/i.test(s)) {
+      const mapped = s
+        .toUpperCase()
+        .split('')
+        .map(lookup)
+        .join('');
+      return mapped || s.toUpperCase();
+    }
+    return s;
   }
 
   /** HTML → 纯文本（简答的隐藏域里可能存的是 <p>…</p>） */
@@ -2708,7 +2806,16 @@ CXAI.Scraper = (function () {
       );
       const options = optionEls.map((el, k) => {
         const raw = (el.innerText || el.textContent || '').trim();
-        return { key: String.fromCharCode(65 + k), text: cleanOption(raw, k), raw, el, answered: false };
+        const meta = optionMeta(el, k);
+        return {
+          key: meta.displayLabel,
+          displayLabel: meta.displayLabel,
+          serverKey: meta.serverKey,
+          text: cleanOption(raw, k),
+          raw,
+          el,
+          answered: false
+        };
       });
       const typeAttr = root.querySelector('[answertype]');
       const rawInputs = readTextInputs(root);
@@ -2911,6 +3018,7 @@ CXAI.Scraper = (function () {
     clickNext,
     nextButton,
     selectedKeys,
+    toDisplayKeys,
     pickSame,
     TYPE_LABEL,
     SHELL_LABEL,
@@ -6221,7 +6329,6 @@ CXAI.Apply = (function () {
     opts = opts || {};
     const opt = q.options.filter((o) => o.key === key)[0];
     if (!opt) return { ok: false, clicked: [], strategy: 'none', error: '选项缺失' };
-
     // 已选中 → 直接过（ocsjs 的 if 判断就是这一条：已选不再点）
     // 例外：opts.deselect（多选里要取消多余勾选）时必须真的点一下
     const sibs = sibsOf(q);
@@ -7215,11 +7322,8 @@ CXAI.Apply = (function () {
       freshQ = CXAI.Scraper.pickSame(list, q) || q;
     } catch (e) {}
     let live = (CXAI.Scraper.pageValue(freshQ) || {}).value || (r && r.actual) || '';
-    // 判断题的隐藏域可能是 true/false（题型被猜成 single 时 pageValue 不会折算）：
-    // 统一走 scraper 的口径折算成字母，再按集合比对，避免"点了也选了却报写入失败"。
-    try {
-      if (CXAI.Scraper.normPageAnswer) live = CXAI.Scraper.normPageAnswer(freshQ, live) || live;
-    } catch (e) {}
+    // pageValue 已经把隐藏域折算成"页面显示字母"（randomOptions 下服务端 A = 显示 B）。
+    // 这里绝不能再折一次：第二次会把显示字母又当服务端键映射一遍，B 变成 C。
     const want = (result.keys || []).join('');
     // 最终验收按"集合相等"：want='AB' 而页面留下 AC 必须判失败。
     // 旧实现只看 live 里有没有第一个字母，配合 retryByText 的"点了几次"式成功判定会漏掉错选项。
@@ -8585,7 +8689,7 @@ details.adv[open] > summary, details.more[open] > summary { margin-bottom:6px; }
   function renderCorner(rows) {
     const box = $('#anscorner');
     if (!box) return;
-    const show = CXAI.Cfg.get('ui.answerCorner', true) !== false && !cornerHidden();
+    const show = CXAI.Cfg.get('ui.answerCorner', false) === true && !cornerHidden();
     box.style.display = show ? 'flex' : 'none';
     if (!show) return;
     try {
@@ -10212,7 +10316,7 @@ CXAI.Engine = (function () {
     opt = opt || {};
     if (st.prefetching) return st.prefetchPromise || 0;
     st.prefetching = true;
-    const concurrency = Math.max(1, Math.min(4, Number(CXAI.Cfg.get('engine.prefetchConcurrency', 2)) || 2));
+    const concurrency = Math.max(1, Math.min(8, Number(CXAI.Cfg.get('engine.prefetchConcurrency', 4)) || 4));
     const overwrite = CXAI.Cfg.get('apply.overwriteAnswered', false);
     let queue = [];
     try {
@@ -11660,7 +11764,7 @@ CXAI.Settings = (function () {
   <div class="cs-line"></div>
   <div class="cs-grid g3">
     ${chk('ui.showOnly', cfg().ui.showOnly !== false, '仅显示答案（不自动点选）', '默认开：进页判题、右下角答案条展示答案，绝不点击选项；关掉 = 判定后自动点选落盘')}
-    ${chk('ui.answerCorner', cfg().ui.answerCorner !== false, '右下角答案条', '选择题点击跳到该题，填空/简答点击复制答案')}
+    ${chk('ui.answerCorner', cfg().ui.answerCorner === true, '右下角答案条', '默认隐藏；勾上后选择题点击跳到该题，填空/简答点击复制答案')}
     ${chk('apply.fixWrong', ap.fixWrong !== false, '已答题答错才重写', '默认开：先判题，与页面答案不一致才重做；关掉 = 已答一律不碰')}
     ${chk('apply.allowGuess', ap.allowGuess === true, '低置信度也写入（不推荐）', '默认关：置信度不足的题只标黄，留给你确认')}
     ${chk('guard.enabled', g.enabled, '环境伪装总开关', '前台保持 + 自动确认弹窗 + 节奏控制')}
@@ -11692,7 +11796,7 @@ CXAI.Settings = (function () {
   </div>
   <div class="cs-grid g3" style="margin-top:12px">
     ${num('engine.bootstrapPollMs', en.bootstrapPollMs || 15000, 1000, 60000, 500, '等题块渲染上限 (ms)')}
-    ${num('engine.prefetchConcurrency', en.prefetchConcurrency || 2, 1, 8, 1, '预取并发')}
+    ${num('engine.prefetchConcurrency', en.prefetchConcurrency || 4, 1, 8, 1, '预取并发')}
     ${num('engine.prefetchDelayMs', en.prefetchDelayMs == null ? 2000 : en.prefetchDelayMs, 0, 30000, 500, '预取前等待 (ms)')}
   </div>
 </section>`;

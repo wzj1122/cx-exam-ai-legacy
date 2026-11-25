@@ -356,6 +356,62 @@ function buildExamPage() {
   return { document, body };
 }
 
+/** randomOptions=true 的真机结构：页面显示字母 A/B/C/D，span[data] 是服务端 D/A/B/C */
+function buildRandomOptionsPage() {
+  const body = h('body', {}, []);
+  const wrap = h('div', { class: 'questionList' }, []);
+  const li = h('div', { class: 'questionLi', data: '7654321' }, []);
+  li.appendChild(h('input', { name: 'type7654321', value: '0', type: 'hidden' }, []));
+  const hidden = h('input', { id: 'answer7654321', name: 'answer7654321', value: '', type: 'hidden' }, []);
+  li.appendChild(hidden);
+  li.appendChild(h('h3', { class: 'mark_name' }, []).setText('1、randomOptions 下第二次握手是哪一个？'));
+  const ul = h('ul', { class: 'stem_answer' }, []);
+  const rows = [
+    ['A', 'D', 'SYN'],
+    ['B', 'A', 'SYN + ACK'],
+    ['C', 'B', 'ACK'],
+    ['D', 'C', 'FIN']
+  ];
+  rows.forEach(([display, server, text], i) => {
+    const li2 = h('li', { class: 'clearfix' }, []);
+    const a = h('a', { class: 'answerBg', href: 'javascript:;' }, []);
+    const label = h('span', { class: 'addChoice choice7654321 num_option fl', data: server, qid: '7654321' }, []).setText(display);
+    const ap = h('div', { class: 'answer_p' }, []);
+    ap.appendChild(h('div', { class: 'textDIV' }, []).setText(display + '. ' + text));
+    a.onclick = function () {
+      hidden.value = server;
+      ap.classList.add('check_answer');
+    };
+    a.appendChild(label);
+    a.appendChild(ap);
+    li2.appendChild(a);
+    ul.appendChild(li2);
+  });
+  li.appendChild(ul);
+  wrap.appendChild(li);
+  body.appendChild(wrap);
+  const document = {
+    body,
+    documentElement: body,
+    readyState: 'complete',
+    title: '随机选项考试',
+    hidden: false,
+    visibilityState: 'visible',
+    _listeners: {},
+    querySelector: (s) => body.querySelector(s),
+    querySelectorAll: (s) => body.querySelectorAll(s),
+    getElementById: (id) => body.querySelector('#' + id),
+    createElement: (t) => new El(t, {}, []),
+    addEventListener: function (t, fn) {
+      (this._listeners[t] = this._listeners[t] || []).push(fn);
+    },
+    removeEventListener: function () {},
+    hasFocus: () => true,
+    contains: (n) => body.contains(n)
+  };
+  return { document, hidden };
+}
+
 /* ============================ 3. 沙箱 ============================ */
 
 const { document } = buildExamPage();
@@ -608,6 +664,41 @@ function ok(cond, label, extra) {
   const r3 = await CXAI.Apply.apply(questions[3], { keys: [], answerText: 'SYN+ACK' });
   ok(r3.ok === true && r3.filled === 1, '填空题写入成功', r3);
   ok(questions[3].inputs[0].value === 'SYN+ACK', 'textarea 值正确', questions[3].inputs[0].value);
+
+  console.log('\n[3.5] randomOptions：显示字母 ≠ 服务端 data 键');
+  {
+    const savedDoc = sandbox.document;
+    const savedWinDoc = windowObj.document;
+    const rp = buildRandomOptionsPage();
+    sandbox.document = rp.document;
+    windowObj.document = rp.document;
+    const rq = CXAI.Scraper.collect().questions[0];
+    ok(
+      rq.options.map((o) => o.key).join('') === 'ABCD',
+      'key 仍是页面显示字母 A/B/C/D',
+      rq.options.map((o) => o.key).join('')
+    );
+    ok(
+      rq.options.map((o) => o.serverKey).join('') === 'DABC',
+      'serverKey 读到服务端 D/A/B/C',
+      rq.options.map((o) => o.serverKey).join('')
+    );
+    ok(
+      JSON.stringify(CXAI.AI.resolveAnswerKeys('B', rq).keys) === JSON.stringify(['B']),
+      "模型答页面字母 B → 仍是 ['B']",
+      CXAI.AI.resolveAnswerKeys('B', rq)
+    );
+    rp.hidden.value = 'A'; // 服务端键 A = 页面显示 B
+    ok(CXAI.Scraper.pageValue(rq).value === 'B', '隐藏域 A 折算回显示字母 B', CXAI.Scraper.pageValue(rq).value);
+    rp.hidden.value = '';
+    rq.options.forEach((o) => o.el.classList.remove('check_answer'));
+    const rr = await CXAI.Apply.apply(rq, { keys: ['B'], answerText: 'B' });
+    ok(rr.ok === true, '只点页面显示 B（服务端 A）也能验收通过', rr);
+    ok(rp.hidden.value === 'A', '隐藏域最终是服务端键 A', rp.hidden.value);
+    ok(!CXAI.Apply.isChecked(rq.options[0].el), '其它选项没有被 toggle', '');
+    sandbox.document = savedDoc;
+    windowObj.document = savedWinDoc;
+  }
 
   console.log('\n[4] 多重 AI 判定（分歧 → 复核 → 仲裁）');
   CXAI.Cfg.set('ai.providers', [

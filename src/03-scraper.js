@@ -413,6 +413,55 @@ CXAI.Scraper = (function () {
     return els;
   }
 
+  /**
+   * 选项三元组：页面显示字母 / 服务端真正提交的键 / 选项文本。
+   * randomOptions=true 时页面显示 A、span[data] 却是 D：
+   * key 保持页面显示字母（模型/UI 都用它），另存 serverKey，
+   * 读回隐藏域时先映射回显示字母再比较，避免"答对点错"。
+   */
+  function optionMeta(el, i) {
+    const holder =
+      (el.closest && (el.closest('.answerBg') || el.closest('.hoverDiv') || el.closest('li'))) || el;
+    let labelEl = null;
+    try {
+      labelEl =
+        (holder.querySelector && holder.querySelector('.num_option, .num_option_dx, .option_num, .num, span[choice_name]')) ||
+        (el.querySelector && el.querySelector('.num_option, .num_option_dx, .option_num, .num')) ||
+        null;
+    } catch (e) {}
+    const raw = String(el.innerText || el.textContent || '').trim();
+    let display = '';
+    if (labelEl) {
+      display = String(labelEl.textContent || '')
+        .replace(/[^A-Za-z对错]/g, '')
+        .trim()
+        .toUpperCase();
+    }
+    if (!display) {
+      const m = /^\s*([A-Ha-h])\s*[、.．)）:：]/.exec(raw);
+      if (m) display = m[1].toUpperCase();
+    }
+    if (!display || display.length > 2) display = String.fromCharCode(65 + i);
+
+    let serverKey = '';
+    const candidates = [
+      labelEl && labelEl.getAttribute && labelEl.getAttribute('data'),
+      labelEl && labelEl.getAttribute && labelEl.getAttribute('choice_name'),
+      holder.getAttribute && holder.getAttribute('data'),
+      holder.getAttribute && holder.getAttribute('choice_name'),
+      holder.getAttribute && holder.getAttribute('data-value'),
+      holder.getAttribute && holder.getAttribute('value')
+    ];
+    for (const c of candidates) {
+      const v = String(c == null ? '' : c).trim();
+      if (!v) continue;
+      if (/^\d{6,}$/.test(v)) continue;
+      serverKey = v.toUpperCase();
+      break;
+    }
+    return { displayLabel: display, serverKey: serverKey, holder: holder };
+  }
+
   /** 选中态类名：check_answer / check_answer_dx / checkAnswer / checked / selected …（排除 un* 反向前缀） */
   const SEL_TOKEN = /^(check_?answer\w*|checked|selected|active|chosed|chosen|curSelected)$/i;
 
@@ -570,11 +619,20 @@ CXAI.Scraper = (function () {
      */
     const byUuid = new Map();
     const stems = {};
+    // 顶层普通选项的 span.addChoice[qid] 里 qid 就是本题题号；
+    // 只有小题组的空才用另一套 UUID。把它排除，否则普通选择题会被
+    // 误判成"1 个空的小题组"，落盘走 answerGroup 而不是 answerChoice
+    // （randomOptions 页面尤其明显：显示 A、data=D，结果点到别的选项）。
+    let selfQid = '';
+    try {
+      selfQid = qidOf(root);
+    } catch (e) {}
     try {
       Array.from(root.querySelectorAll('.hoverDiv')).forEach((el) => {
         const tag = el.querySelector('span[data][qid], span[data]');
         if (!tag) return;
         const uuid = String(tag.getAttribute('qid') || '');
+        if (!uuid || uuid === selfQid) return;
         const key = String(tag.getAttribute('data') || '').trim().toUpperCase();
         if (!uuid || !key) return;
         if (!stems[uuid]) {
@@ -661,6 +719,7 @@ CXAI.Scraper = (function () {
     } catch (e) {
       return [];
     }
+    if (selfQid) els = els.filter((el) => String(el.getAttribute('qid') || '') !== selfQid);
     if (!els.length) return [];
     const qids = [];
     els.forEach(function (el) {
@@ -763,8 +822,11 @@ CXAI.Scraper = (function () {
 
     const options = optionEls.map((el, i) => {
       const raw = (el.innerText || el.textContent || '').trim();
+      const meta = optionMeta(el, i);
       return {
-        key: String.fromCharCode(65 + i),
+        key: meta.displayLabel,
+        displayLabel: meta.displayLabel,
+        serverKey: meta.serverKey,
         text: cleanOption(raw, i),
         raw,
         el,
@@ -1005,9 +1067,44 @@ CXAI.Scraper = (function () {
     // replace(/[^A-H]/g,'') 清成空串，"点了也选了"却永远报写入失败）。
     const looksBool = /^(true|false|t|f|1|0|对|错|正确|错误|是|否|√|×)$/i.test(v);
     const isJudge = q && (q.type === 'judgement' || (looksBool && (q.options || []).length === 2));
-    if (!isJudge) return /^[A-H]+$/i.test(v) ? v.toUpperCase() : v;
+    if (!isJudge) return toDisplayKeys(q, v);
     const k = judgeKey(q, v);
-    return k || (/^[A-H]+$/i.test(v) ? v.toUpperCase() : v);
+    return k ? toDisplayKeys(q, k) : toDisplayKeys(q, v);
+  }
+
+  /**
+   * 服务端键 → 页面显示字母。
+   * 只用于把隐藏域里的值折算成"模型和 UI 看到的字母"；
+   * 点击仍然走选项元素本身，所以不会出现"答对点错"。
+   */
+  function toDisplayKeys(q, raw) {
+    const s = String(raw == null ? '' : raw).trim();
+    const opts = (q && q.options) || [];
+    if (!s || !opts.length) return s;
+    const lookup = function (tok) {
+      const u = String(tok || '').trim().toUpperCase();
+      if (!u) return '';
+      const byServer = opts.filter(function (o) {
+        return String(o.serverKey || '').toUpperCase() === u;
+      })[0];
+      if (byServer) return byServer.key;
+      const byDisplay = opts.filter(function (o) {
+        return String(o.displayLabel || o.key || '').toUpperCase() === u;
+      })[0];
+      if (byDisplay) return byDisplay.key;
+      return '';
+    };
+    const whole = lookup(s);
+    if (whole) return whole;
+    if (/^[A-H]+$/i.test(s)) {
+      const mapped = s
+        .toUpperCase()
+        .split('')
+        .map(lookup)
+        .join('');
+      return mapped || s.toUpperCase();
+    }
+    return s;
   }
 
   /** HTML → 纯文本（简答的隐藏域里可能存的是 <p>…</p>） */
@@ -1353,7 +1450,16 @@ CXAI.Scraper = (function () {
       );
       const options = optionEls.map((el, k) => {
         const raw = (el.innerText || el.textContent || '').trim();
-        return { key: String.fromCharCode(65 + k), text: cleanOption(raw, k), raw, el, answered: false };
+        const meta = optionMeta(el, k);
+        return {
+          key: meta.displayLabel,
+          displayLabel: meta.displayLabel,
+          serverKey: meta.serverKey,
+          text: cleanOption(raw, k),
+          raw,
+          el,
+          answered: false
+        };
       });
       const typeAttr = root.querySelector('[answertype]');
       const rawInputs = readTextInputs(root);
@@ -1556,6 +1662,7 @@ CXAI.Scraper = (function () {
     clickNext,
     nextButton,
     selectedKeys,
+    toDisplayKeys,
     pickSame,
     TYPE_LABEL,
     SHELL_LABEL,

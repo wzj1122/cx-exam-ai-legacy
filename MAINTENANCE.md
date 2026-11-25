@@ -1,4 +1,4 @@
-> 最后更新：2026-11-24 ｜ 当前版本：1.12.0（`package.json`；`tools/diag-mapping.js` 为未发布诊断工具）
+> 最后更新：2026-11-25 ｜ 当前版本：1.13.0（`package.json`；`tools/diag-mapping.js` 为未发布诊断工具）
 
 # MAINTENANCE
 
@@ -349,6 +349,18 @@ Apply.apply(q, result)
 25. **提交前跑 `git status --short` 自查**：出现 `logs/`、`.cdp-profile/`、`.chrome-profile/`、`.shot-*.png` 说明 `.gitignore` 被绕过（多半是 `git add -f`）。这些目录含考试页面截图、登录态 Cookie、模型 Key，一旦推到公开仓库等于泄露，且从历史里清不掉。
 
 ## 变更记录
+
+### v1.13.0（2026-11-25）randomOptions 按键错位 · 预取并发 4 · 答案条默认隐藏
+
+| 改动 | 涉及文件 |
+|---|---|
+| 选项拆成三元组：`key`/`displayLabel` 保持页面显示字母，新增 `serverKey` 读 `span.num_option[data]`、`span[choice_name]`、行上 `data`；不再用 DOM 位置当答案键 | `03-scraper.js` |
+| 新增 `toDisplayKeys()`：隐藏域 / 小题组 JSON 里的服务端键先映射回显示字母再比对；`normPageAnswer` 统一走它 | `03-scraper.js` |
+| 修复验收二次折算：`apply()` 里对 `pageValue` 结果又跑了一次 `normPageAnswer`，randomOptions 下 B→C 误报失败 | `05-apply.js` |
+| 修复普通选择题被当成「1 个空的小题组」：`readGroupBlanks` 用 `qidOf(root)` 排除本题自身的 `span.addChoice[qid]`，否则落盘走 `answerGroup` 点到别的选项 | `03-scraper.js` |
+| 预取并发默认 2→4（上限放到 8）；进考试页自动预取答案的开关与延迟保持不变 | `01-core.js` `08-main.js` `09-settings.js` |
+| 右下角答案条默认隐藏（`ui.answerCorner` 默认 false），设置中心「运行」勾选后启用 | `01-core.js` `07-ui.js` `09-settings.js` |
+| 新增离线回归：`exam-random-options` 夹具，断言「模型答显示 B → 只点服务端 A 的选项 → 隐藏域最终 A → 其它选项未被 toggle」 | `tools/test-dom.js` |
 
 ### v1.12.0（2026-11-24）仅显示答案 · 右下角答案条 · 进页即判题 + 审查 P1 修复
 

@@ -1,6 +1,6 @@
 {
   "name": "cx-exam-ai",
-  "version": "1.12.0",
+  "version": "1.13.0",
   "private": true,
   "description": "超星学习通考试 AI 自动答题脚本（多模型交叉判定，无题库）",
   "keywords": [

@@ -794,7 +794,7 @@ CXAI.Settings = (function () {
   <div class="cs-line"></div>
   <div class="cs-grid g3">
     ${chk('ui.showOnly', cfg().ui.showOnly !== false, '仅显示答案（不自动点选）', '默认开：进页判题、右下角答案条展示答案，绝不点击选项；关掉 = 判定后自动点选落盘')}
-    ${chk('ui.answerCorner', cfg().ui.answerCorner !== false, '右下角答案条', '选择题点击跳到该题，填空/简答点击复制答案')}
+    ${chk('ui.answerCorner', cfg().ui.answerCorner === true, '右下角答案条', '默认隐藏；勾上后选择题点击跳到该题，填空/简答点击复制答案')}
     ${chk('apply.fixWrong', ap.fixWrong !== false, '已答题答错才重写', '默认开：先判题，与页面答案不一致才重做；关掉 = 已答一律不碰')}
     ${chk('apply.allowGuess', ap.allowGuess === true, '低置信度也写入（不推荐）', '默认关：置信度不足的题只标黄，留给你确认')}
     ${chk('guard.enabled', g.enabled, '环境伪装总开关', '前台保持 + 自动确认弹窗 + 节奏控制')}
@@ -826,7 +826,7 @@ CXAI.Settings = (function () {
   </div>
   <div class="cs-grid g3" style="margin-top:12px">
     ${num('engine.bootstrapPollMs', en.bootstrapPollMs || 15000, 1000, 60000, 500, '等题块渲染上限 (ms)')}
-    ${num('engine.prefetchConcurrency', en.prefetchConcurrency || 2, 1, 8, 1, '预取并发')}
+    ${num('engine.prefetchConcurrency', en.prefetchConcurrency || 4, 1, 8, 1, '预取并发')}
     ${num('engine.prefetchDelayMs', en.prefetchDelayMs == null ? 2000 : en.prefetchDelayMs, 0, 30000, 500, '预取前等待 (ms)')}
   </div>
 </section>`;

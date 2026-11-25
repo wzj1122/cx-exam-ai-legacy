@@ -484,7 +484,6 @@ CXAI.Apply = (function () {
     opts = opts || {};
     const opt = q.options.filter((o) => o.key === key)[0];
     if (!opt) return { ok: false, clicked: [], strategy: 'none', error: '选项缺失' };
-
     // 已选中 → 直接过（ocsjs 的 if 判断就是这一条：已选不再点）
     // 例外：opts.deselect（多选里要取消多余勾选）时必须真的点一下
     const sibs = sibsOf(q);
@@ -1478,11 +1477,8 @@ CXAI.Apply = (function () {
       freshQ = CXAI.Scraper.pickSame(list, q) || q;
     } catch (e) {}
     let live = (CXAI.Scraper.pageValue(freshQ) || {}).value || (r && r.actual) || '';
-    // 判断题的隐藏域可能是 true/false（题型被猜成 single 时 pageValue 不会折算）：
-    // 统一走 scraper 的口径折算成字母，再按集合比对，避免"点了也选了却报写入失败"。
-    try {
-      if (CXAI.Scraper.normPageAnswer) live = CXAI.Scraper.normPageAnswer(freshQ, live) || live;
-    } catch (e) {}
+    // pageValue 已经把隐藏域折算成"页面显示字母"（randomOptions 下服务端 A = 显示 B）。
+    // 这里绝不能再折一次：第二次会把显示字母又当服务端键映射一遍，B 变成 C。
     const want = (result.keys || []).join('');
     // 最终验收按"集合相等"：want='AB' 而页面留下 AC 必须判失败。
     // 旧实现只看 live 里有没有第一个字母，配合 retryByText 的"点了几次"式成功判定会漏掉错选项。
