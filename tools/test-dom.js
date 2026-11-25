@@ -684,6 +684,11 @@ function ok(cond, label, extra) {
       rq.options.map((o) => o.serverKey).join('')
     );
     ok(
+      (rq.group || []).length === 0,
+      '普通选择题不会被误判成「1 个空的小题组」（否则落盘走 answerGroup 点到别的选项）',
+      (rq.group || []).length
+    );
+    ok(
       JSON.stringify(CXAI.AI.resolveAnswerKeys('B', rq).keys) === JSON.stringify(['B']),
       "模型答页面字母 B → 仍是 ['B']",
       CXAI.AI.resolveAnswerKeys('B', rq)
