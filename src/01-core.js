@@ -672,6 +672,15 @@ CXAI.Cfg = {
       data.ai.vision = JSON.parse(JSON.stringify(CXAI.DEFAULT_CONFIG.ai.vision));
     }
     data.ai.providers = (data.ai.providers || []).map((p, i) => CXAI.normalizeProvider(p, i));
+    // v1.13.0 一次性迁移：右下角答案条改成默认隐藏。
+    // 老用户存过 ui.answerCorner=true，只改默认值对他们无效，这里强制关一次并打标，
+    // 之后用户自己去设置中心「运行」里重新勾选，不会再被覆盖。
+    try {
+      if (!CXAI.Store.get('migr.answerCornerHidden', false)) {
+        data.ui.answerCorner = false;
+        CXAI.Store.set('migr.answerCornerHidden', true);
+      }
+    } catch (e) {}
     this.data = data;
     return this.data;
   },

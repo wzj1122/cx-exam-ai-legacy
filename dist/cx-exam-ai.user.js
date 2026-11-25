@@ -30,7 +30,7 @@
 /* 全局命名空间：所有模块挂载到 CXAI 上，模块之间只依赖它 */
 var CXAI = {};
 CXAI.__version = "1.13.0";
-CXAI.__builtAt = "2026-11-25T00:38:41.388Z";
+CXAI.__builtAt = "2026-11-25T00:55:56.323Z";
 
 /* ==================== 01-core.js ==================== */
 /* ---------------- 配置 / 存储 / 工具 ---------------- */
@@ -707,6 +707,15 @@ CXAI.Cfg = {
       data.ai.vision = JSON.parse(JSON.stringify(CXAI.DEFAULT_CONFIG.ai.vision));
     }
     data.ai.providers = (data.ai.providers || []).map((p, i) => CXAI.normalizeProvider(p, i));
+    // v1.13.0 一次性迁移：右下角答案条改成默认隐藏。
+    // 老用户存过 ui.answerCorner=true，只改默认值对他们无效，这里强制关一次并打标，
+    // 之后用户自己去设置中心「运行」里重新勾选，不会再被覆盖。
+    try {
+      if (!CXAI.Store.get('migr.answerCornerHidden', false)) {
+        data.ui.answerCorner = false;
+        CXAI.Store.set('migr.answerCornerHidden', true);
+      }
+    } catch (e) {}
     this.data = data;
     return this.data;
   },
